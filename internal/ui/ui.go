@@ -26,14 +26,15 @@ var (
 	helpStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
 	cursorStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("11")).Bold(true)
 	runningStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("10")).Bold(true)
-	normalStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("7"))
+	// repository names stay white
+	normalStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("15"))
 	errStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("9"))
 	statusStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("14"))
 	dimStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
 	searchStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("14")).Bold(true)
 	panelStyle   = lipgloss.NewStyle().
 			Border(lipgloss.RoundedBorder()).
-			BorderForeground(lipgloss.Color("8")).
+			BorderForeground(lipgloss.Color("15")).
 			Padding(0, 1)
 )
 
@@ -388,42 +389,37 @@ func (m *Model) ensureVisible(listRows int) {
 
 func (m Model) renderItem(i int, it session.Item) string {
 	cursor := "  "
-	lineStyle := normalStyle
+	nameStyle := normalStyle
 	if i == m.cursor {
 		cursor = cursorStyle.Render("❯ ")
-		lineStyle = cursorStyle
+		nameStyle = cursorStyle
 	}
 
 	mark := " "
-	name := it.Name
+	name := nameStyle.Render(it.Name)
 	extra := ""
 	if it.Running {
 		mark = runningStyle.Render("●")
-		name = runningStyle.Render(it.Name)
-		extra = runningStyle.Render("  running")
-		if it.Port > 0 {
-			extra += runningStyle.Render(fmt.Sprintf("  :%d", it.Port))
+		if i == m.cursor {
+			extra = cursorStyle.Render("  running")
+			if it.Port > 0 {
+				extra += cursorStyle.Render(fmt.Sprintf("  :%d", it.Port))
+			}
+		} else {
+			extra = runningStyle.Render("  running")
+			if it.Port > 0 {
+				extra += runningStyle.Render(fmt.Sprintf("  :%d", it.Port))
+			}
 		}
-	} else if !it.Runnable {
-		mark = dimStyle.Render("○")
-		name = dimStyle.Render(it.Name)
-		extra = dimStyle.Render("  jump")
-	} else {
-		name = lineStyle.Render(it.Name)
-		if it.Port > 0 {
+	} else if it.Port > 0 {
+		if i == m.cursor {
+			extra = cursorStyle.Render(fmt.Sprintf("  :%d", it.Port))
+		} else {
 			extra = dimStyle.Render(fmt.Sprintf("  :%d", it.Port))
 		}
 	}
 
-	src := ""
-	switch it.Source {
-	case "scan":
-		src = dimStyle.Render("  [scan]")
-	case "ghq":
-		src = dimStyle.Render("  [ghq]")
-	}
-
-	return fmt.Sprintf("%s%s %s%s%s", cursor, mark, name, extra, src)
+	return fmt.Sprintf("%s%s %s%s", cursor, mark, name, extra)
 }
 
 func (m Model) View() string {
