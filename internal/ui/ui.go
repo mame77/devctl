@@ -3,6 +3,7 @@ package ui
 import (
 	"fmt"
 	"strings"
+	"unicode"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -11,10 +12,10 @@ import (
 )
 
 const (
-	maxPanelWidth   = 80
-	panelHeightPct  = 70 // percent of terminal height
-	minPanelHeight  = 10
-	minListRows     = 3
+	maxPanelWidth  = 80
+	panelHeightPct = 70 // percent of terminal height
+	minPanelHeight = 10
+	minListRows    = 3
 )
 
 var (
@@ -26,6 +27,7 @@ var (
 	errStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("9"))
 	statusStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("14"))
 	dimStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
+	searchStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("14")).Bold(true)
 	panelStyle   = lipgloss.NewStyle().
 			Border(lipgloss.RoundedBorder()).
 			BorderForeground(lipgloss.Color("8")).
@@ -34,9 +36,11 @@ var (
 
 type Model struct {
 	mgr      *session.Manager
-	items    []session.Item
-	cursor   int
-	offset   int // list scroll offset
+	allItems []session.Item // full list
+	cursor   int            // index into filtered list
+	offset   int            // list scroll offset
+	query    string         // name filter (case-insensitive substring)
+	searching bool          // typing into /
 	status   string
 	errMsg   string
 	width    int
@@ -58,15 +62,53 @@ func (m *Model) reload() {
 		m.errMsg = err.Error()
 		return
 	}
-	m.items = items
+	// keep selection by name across reload when possible
+	var selected string
+	if filtered := m.filtered(); len(filtered) > 0 && m.cursor < len(filtered) {
+		selected = filtered[m.cursor].Name
+	}
+	m.allItems = items
 	m.errMsg = ""
-	if m.cursor >= len(m.items) && len(m.items) > 0 {
-		m.cursor = len(m.items) - 1
+	m.cursor = 0
+	if selected != "" {
+		for i, it := range m.filtered() {
+			if it.Name == selected {
+				m.cursor = i
+				break
+			}
+		}
+	}
+	m.clampCursor()
+	m.ensureVisible(m.listRows())
+}
+
+func (m Model) filtered() []session.Item {
+	q := strings.ToLower(strings.TrimSpace(m.query))
+	if q == "" {
+		return m.allItems
+	}
+	out := make([]session.Item, 0, len(m.allItems))
+	for _, it := range m.allItems {
+		if strings.Contains(strings.ToLower(it.Name), q) {
+			out = append(out, it)
+		}
+	}
+	return out
+}
+
+func (m *Model) clampCursor() {
+	n := len(m.filtered())
+	if n == 0 {
+		m.cursor = 0
+		m.offset = 0
+		return
+	}
+	if m.cursor >= n {
+		m.cursor = n - 1
 	}
 	if m.cursor < 0 {
 		m.cursor = 0
 	}
-	m.ensureVisible(m.listRows())
 }
 
 func (m Model) Init() tea.Cmd {
@@ -97,68 +139,147 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tea.KeyMsg:
-		switch msg.String() {
-		case "q", "ctrl+c":
-			m.quitting = true
-			return m, tea.Quit
-		case "j", "down":
-			if len(m.items) > 0 && m.cursor < len(m.items)-1 {
-				m.cursor++
-				m.ensureVisible(m.listRows())
+		if m.searching {
+			return m.updateSearch(msg)
+		}
+		return m.updateNormal(msg)
+	}
+	return m, nil
+}
+
+func (m Model) updateSearch(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc", "ctrl+c":
+		m.searching = false
+		if msg.String() == "esc" && m.query != "" {
+			// first esc exits typing; keep filter. second clear is handled in normal mode with esc
+		}
+		return m, nil
+	case "enter":
+		m.searching = false
+		return m, nil
+	case "backspace", "ctrl+h":
+		if m.query != "" {
+			// remove last rune
+			r := []rune(m.query)
+			m.query = string(r[:len(r)-1])
+			m.cursor = 0
+			m.offset = 0
+			m.clampCursor()
+			m.ensureVisible(m.listRows())
+		} else {
+			m.searching = false
+		}
+		return m, nil
+	case "ctrl+u":
+		m.query = ""
+		m.cursor = 0
+		m.offset = 0
+		m.ensureVisible(m.listRows())
+		return m, nil
+	case "down", "ctrl+n":
+		items := m.filtered()
+		if len(items) > 0 && m.cursor < len(items)-1 {
+			m.cursor++
+			m.ensureVisible(m.listRows())
+		}
+		return m, nil
+	case "up", "ctrl+p":
+		if m.cursor > 0 {
+			m.cursor--
+			m.ensureVisible(m.listRows())
+		}
+		return m, nil
+	}
+
+	// printable runes (skip multi-key combos)
+	if msg.Type == tea.KeyRunes && !msg.Alt {
+		for _, r := range msg.Runes {
+			if unicode.IsPrint(r) {
+				m.query += string(r)
 			}
-		case "k", "up":
-			if m.cursor > 0 {
-				m.cursor--
-				m.ensureVisible(m.listRows())
+		}
+		m.cursor = 0
+		m.offset = 0
+		m.clampCursor()
+		m.ensureVisible(m.listRows())
+	}
+	return m, nil
+}
+
+func (m Model) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	items := m.filtered()
+	switch msg.String() {
+	case "q", "ctrl+c":
+		m.quitting = true
+		return m, tea.Quit
+	case "/":
+		m.searching = true
+		return m, nil
+	case "esc":
+		if m.query != "" {
+			m.query = ""
+			m.cursor = 0
+			m.offset = 0
+			m.ensureVisible(m.listRows())
+		}
+		return m, nil
+	case "j", "down":
+		if len(items) > 0 && m.cursor < len(items)-1 {
+			m.cursor++
+			m.ensureVisible(m.listRows())
+		}
+	case "k", "up":
+		if m.cursor > 0 {
+			m.cursor--
+			m.ensureVisible(m.listRows())
+		}
+	case "enter", "g":
+		if len(items) == 0 {
+			return m, nil
+		}
+		m.jumpPath = items[m.cursor].Path
+		m.quitting = true
+		return m, tea.Quit
+	case "ctrl+g":
+		m.wantFzf = true
+		m.quitting = true
+		return m, tea.Quit
+	case "r":
+		_ = m.mgr.ReloadConfig()
+		m.reload()
+		m.status = "reloaded"
+	case " ":
+		if len(items) == 0 {
+			return m, nil
+		}
+		name := items[m.cursor].Name
+		return m, func() tea.Msg {
+			err := m.mgr.StartSwitch(name)
+			if err != nil {
+				return doneMsg{err: err}
 			}
-		case "enter", "g":
-			if len(m.items) == 0 {
-				return m, nil
+			return doneMsg{status: fmt.Sprintf("started %s", name)}
+		}
+	case "x":
+		if len(items) == 0 {
+			return m, nil
+		}
+		name := items[m.cursor].Name
+		return m, func() tea.Msg {
+			err := m.mgr.Kill(name)
+			if err != nil {
+				return doneMsg{err: err}
 			}
-			m.jumpPath = m.items[m.cursor].Path
-			m.quitting = true
-			return m, tea.Quit
-		case "ctrl+g":
-			// leave alt-screen first, then fzf (all ghq repos)
-			m.wantFzf = true
-			m.quitting = true
-			return m, tea.Quit
-		case "r":
-			_ = m.mgr.ReloadConfig()
-			m.reload()
-			m.status = "reloaded"
-		case " ":
-			if len(m.items) == 0 {
-				return m, nil
+			return doneMsg{status: fmt.Sprintf("killed %s", name)}
+		}
+	case "a":
+		return m, func() tea.Msg {
+			err := m.mgr.KillAll()
+			if err != nil {
+				return doneMsg{err: err}
 			}
-			name := m.items[m.cursor].Name
-			return m, func() tea.Msg {
-				err := m.mgr.StartSwitch(name)
-				if err != nil {
-					return doneMsg{err: err}
-				}
-				return doneMsg{status: fmt.Sprintf("started %s", name)}
-			}
-		case "x":
-			if len(m.items) == 0 {
-				return m, nil
-			}
-			name := m.items[m.cursor].Name
-			return m, func() tea.Msg {
-				err := m.mgr.Kill(name)
-				if err != nil {
-					return doneMsg{err: err}
-				}
-				return doneMsg{status: fmt.Sprintf("killed %s", name)}
-			}
-		case "a":
-			return m, func() tea.Msg {
-				err := m.mgr.KillAll()
-				if err != nil {
-					return doneMsg{err: err}
-				}
-				return doneMsg{status: "killed all"}
-			}
+			return doneMsg{status: "killed all"}
 		}
 	}
 	return m, nil
@@ -217,7 +338,7 @@ func (m *Model) ensureVisible(listRows int) {
 	if listRows < 1 {
 		listRows = 1
 	}
-	n := len(m.items)
+	n := len(m.filtered())
 	if n == 0 {
 		m.offset = 0
 		return
@@ -292,10 +413,11 @@ func (m Model) View() string {
 		contentW = 10
 	}
 	listRows := m.listRows()
+	items := m.filtered()
 
 	activeName := "none"
 	activeExtra := ""
-	for _, it := range m.items {
+	for _, it := range m.allItems {
 		if it.Running {
 			activeName = it.Name
 			activeExtra = fmt.Sprintf(" (pid %d)", it.PID)
@@ -316,10 +438,10 @@ func (m Model) View() string {
 	body.WriteString("\n")
 
 	// fixed-height list viewport
-	if len(m.items) == 0 {
+	if len(m.allItems) == 0 {
 		empty := []string{
-			dimStyle.Render("(no projects — ghq repos with package.json \"dev\" script,"),
-			dimStyle.Render(" .devctl.toml, or [[projects]] in config are listed)"),
+			dimStyle.Render("(no projects — ghq repos, .devctl.toml,"),
+			dimStyle.Render(" or [[projects]] in config are listed)"),
 		}
 		for i := 0; i < listRows; i++ {
 			if i < len(empty) {
@@ -327,18 +449,24 @@ func (m Model) View() string {
 			}
 			body.WriteString("\n")
 		}
+	} else if len(items) == 0 {
+		for i := 0; i < listRows; i++ {
+			if i == 0 {
+				body.WriteString(dimStyle.Render(fmt.Sprintf("(no match for %q)", m.query)))
+			}
+			body.WriteString("\n")
+		}
 	} else {
 		end := m.offset + listRows
-		if end > len(m.items) {
-			end = len(m.items)
+		if end > len(items) {
+			end = len(items)
 		}
 		shown := 0
 		for i := m.offset; i < end; i++ {
-			body.WriteString(m.renderItem(i, m.items[i]))
+			body.WriteString(m.renderItem(i, items[i]))
 			body.WriteString("\n")
 			shown++
 		}
-		// pad remaining rows so panel height stays fixed
 		for shown < listRows {
 			body.WriteString("\n")
 			shown++
@@ -348,21 +476,31 @@ func (m Model) View() string {
 	body.WriteString(dimStyle.Render(strings.Repeat("─", contentW)))
 	body.WriteString("\n")
 
-	// always reserve status line so panel height stays fixed
-	if m.errMsg != "" {
+	// status / search line
+	if m.searching {
+		body.WriteString(searchStyle.Render("/" + m.query + "█"))
+		body.WriteString(dimStyle.Render(fmt.Sprintf("  %d/%d", len(items), len(m.allItems))))
+	} else if m.query != "" {
+		body.WriteString(searchStyle.Render("/" + m.query))
+		body.WriteString(dimStyle.Render(fmt.Sprintf("  %d/%d  esc clear", len(items), len(m.allItems))))
+	} else if m.errMsg != "" {
 		body.WriteString(errStyle.Render("error: " + m.errMsg))
 	} else if m.status != "" {
 		body.WriteString(statusStyle.Render(m.status))
 	}
 	body.WriteString("\n")
 
-	help := "j/k move  enter/g jump  ^g fzf  space start  x kill  a kill-all  r reload  q quit"
-	if len(m.items) > listRows {
-		help = fmt.Sprintf("%s  (%d/%d)", help, m.cursor+1, len(m.items))
+	var help string
+	if m.searching {
+		help = "type to filter  enter done  esc cancel input  ↑↓ move  ctrl+u clear"
+	} else {
+		help = "j/k move  / search  enter/g jump  ^g fzf  space start  x kill  a kill-all  r reload  q quit"
+		if len(items) > listRows || m.query != "" {
+			help = fmt.Sprintf("%s  (%d/%d)", help, m.cursor+1, len(items))
+		}
 	}
 	body.WriteString(helpStyle.Render(help))
 
-	// fixed size from padded list rows; Width only (Height would double-count borders)
 	panel := panelStyle.Width(pw).Render(strings.TrimRight(body.String(), "\n"))
 
 	tw, th := m.width, m.height

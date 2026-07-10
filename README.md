@@ -45,6 +45,8 @@ bind d run-shell 'tmux display-popup -d "#{pane_current_path}" -E -w 100% -h 100
 | Key | Action |
 |-----|--------|
 | `j` / `k` | move |
+| `/` | filter by repository name |
+| `Esc` | clear filter (or exit search input) |
 | `Enter` / `g` | jump to selected project (tmux) |
 | `Ctrl+G` | fzf pick any ghq repo → jump |
 | `Space` | start / switch (kills others) |
