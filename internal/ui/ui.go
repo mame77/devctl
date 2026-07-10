@@ -2,11 +2,14 @@ package ui
 
 import (
 	"fmt"
+	"os"
+	"os/exec"
 	"strings"
 	"unicode"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/mame77/devctl/internal/config"
 	"github.com/mame77/devctl/internal/jump"
 	"github.com/mame77/devctl/internal/session"
 )
@@ -120,6 +123,11 @@ type doneMsg struct {
 	status string
 }
 
+type editorDoneMsg struct {
+	err  error
+	path string
+}
+
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
@@ -135,6 +143,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.errMsg = ""
 			m.status = msg.status
 		}
+		m.reload()
+		return m, nil
+
+	case editorDoneMsg:
+		if msg.err != nil {
+			m.errMsg = msg.err.Error()
+		} else {
+			m.errMsg = ""
+			m.status = "edited " + msg.path
+		}
+		_ = m.mgr.ReloadConfig()
 		m.reload()
 		return m, nil
 
@@ -249,6 +268,12 @@ func (m Model) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		_ = m.mgr.ReloadConfig()
 		m.reload()
 		m.status = "reloaded"
+	case "e":
+		if len(items) == 0 {
+			return m, nil
+		}
+		it := items[m.cursor]
+		return m, openProjectEditor(it.Path, it.Name)
 	case " ":
 		if len(items) == 0 {
 			return m, nil
@@ -494,7 +519,7 @@ func (m Model) View() string {
 	if m.searching {
 		help = "type to filter  enter done  esc cancel input  ↑↓ move  ctrl+u clear"
 	} else {
-		help = "j/k move  / search  enter/g jump  ^g fzf  space start  x kill  a kill-all  r reload  q quit"
+		help = "j/k move  / search  e edit  enter/g jump  ^g fzf  space start  x kill  a kill-all  r reload  q quit"
 		if len(items) > listRows || m.query != "" {
 			help = fmt.Sprintf("%s  (%d/%d)", help, m.cursor+1, len(items))
 		}
@@ -511,6 +536,31 @@ func (m Model) View() string {
 		th = ph
 	}
 	return lipgloss.Place(tw, th, lipgloss.Center, lipgloss.Center, panel)
+}
+
+func openProjectEditor(dir, name string) tea.Cmd {
+	path, err := config.EnsureProjectFile(dir, name)
+	if err != nil {
+		return func() tea.Msg {
+			return editorDoneMsg{err: err}
+		}
+	}
+	editor := os.Getenv("EDITOR")
+	if editor == "" {
+		editor = os.Getenv("VISUAL")
+	}
+	if editor == "" {
+		editor = "nvim"
+	}
+	// EDITOR may be "code --wait" etc.
+	parts := strings.Fields(editor)
+	bin := parts[0]
+	args := append(parts[1:], path)
+	c := exec.Command(bin, args...)
+	c.Dir = dir
+	return tea.ExecProcess(c, func(err error) tea.Msg {
+		return editorDoneMsg{err: err, path: path}
+	})
 }
 
 func Run(mgr *session.Manager) error {

@@ -146,3 +146,27 @@ func WriteProjectFile(dir string, pf ProjectFile) error {
 	enc := toml.NewEncoder(f)
 	return enc.Encode(pf)
 }
+
+// ProjectFilePath returns the path to a repo's .devctl.toml.
+func ProjectFilePath(dir string) string {
+	return filepath.Join(dir, ".devctl.toml")
+}
+
+// EnsureProjectFile creates .devctl.toml with a stub if missing.
+// Returns the file path.
+func EnsureProjectFile(dir, name string) (string, error) {
+	path := ProjectFilePath(dir)
+	if _, err := os.Stat(path); err == nil {
+		return path, nil
+	} else if !os.IsNotExist(err) {
+		return "", err
+	}
+	if name == "" {
+		name = filepath.Base(dir)
+	}
+	content := fmt.Sprintf("name = %q\n# command = \"npm run dev\"\n# port = 3000\n", name)
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		return "", err
+	}
+	return path, nil
+}
