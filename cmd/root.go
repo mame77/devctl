@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"text/tabwriter"
 
 	"github.com/mame77/devctl/internal/config"
@@ -54,8 +55,12 @@ var statusCmd = &cobra.Command{
 				st = "running"
 				pid = fmt.Sprintf("%d", it.PID)
 			}
-			if it.Port > 0 {
-				port = fmt.Sprintf("%d", it.Port)
+			if len(it.Ports) > 0 {
+				parts := make([]string, len(it.Ports))
+				for i, p := range it.Ports {
+					parts[i] = fmt.Sprintf("%d", p)
+				}
+				port = strings.Join(parts, ",")
 			}
 			if it.Running {
 				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", it.Name, pid, port, st, it.Path)

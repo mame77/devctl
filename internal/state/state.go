@@ -13,7 +13,8 @@ type Entry struct {
 	Name       string     `json:"name"`
 	PID        int        `json:"pid"`
 	PGID       int        `json:"pgid"`
-	Port       int        `json:"port"`
+	Port       int        `json:"port"`  // legacy first port
+	Ports      []int      `json:"ports,omitempty"`
 	Cwd        string     `json:"cwd"`
 	Command    string     `json:"command"`
 	StartedAt  time.Time  `json:"started_at"`

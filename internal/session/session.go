@@ -15,13 +15,20 @@ type Item struct {
 	Name     string
 	Path     string
 	Command  string
-	Port     int
+	Ports    []int
 	Running  bool
 	Done     bool // finished recently; shows "Done" briefly
 	PID      int
 	PGID     int
 	Source   string
 	Runnable bool
+}
+
+func (it Item) PrimaryPort() int {
+	if len(it.Ports) > 0 {
+		return it.Ports[0]
+	}
+	return 0
 }
 
 type Manager struct {
@@ -85,15 +92,15 @@ func (m *Manager) List() ([]Item, error) {
 			Name:     p.Name,
 			Path:     p.Path,
 			Command:  p.Command,
-			Port:     p.Port,
+			Ports:    append([]int(nil), p.Ports...),
 			Source:   p.Source,
 			Runnable: p.Runnable,
 		}
 		if e, ok := statusByName[p.Name]; ok {
 			it.PID = e.PID
 			it.PGID = e.PGID
-			if it.Port == 0 {
-				it.Port = e.Port
+			if len(it.Ports) == 0 {
+				it.Ports = config.NormalizePorts(e.Ports, e.Port)
 			}
 			if process.Alive(e.PID) {
 				it.Running = true
@@ -123,7 +130,7 @@ func (m *Manager) Active() (*Item, error) {
 				Name:    e.Name,
 				Path:    e.Cwd,
 				Command: e.Command,
-				Port:    e.Port,
+				Ports:   config.NormalizePorts(e.Ports, e.Port),
 				Running: true,
 				PID:     e.PID,
 				PGID:    e.PGID,
@@ -195,10 +202,10 @@ func (m *Manager) StartSwitch(name string) error {
 		return fmt.Errorf("kill existing: %w", err)
 	}
 
-	if target.Port > 0 {
-		inUse, _ := process.PortInUse(target.Port)
+	for _, port := range target.Ports {
+		inUse, _ := process.PortInUse(port)
 		if inUse {
-			return fmt.Errorf("port %d already in use (not managed by devctl)", target.Port)
+			return fmt.Errorf("port %d already in use (not managed by devctl)", port)
 		}
 	}
 
@@ -210,11 +217,16 @@ func (m *Manager) StartSwitch(name string) error {
 	if err != nil {
 		return err
 	}
+	primary := 0
+	if len(target.Ports) > 0 {
+		primary = target.Ports[0]
+	}
 	return state.Save(state.Entry{
 		Name:      target.Name,
 		PID:       pid,
 		PGID:      pgid,
-		Port:      target.Port,
+		Port:      primary,
+		Ports:     append([]int(nil), target.Ports...),
 		Cwd:       target.Path,
 		Command:   target.Command,
 		StartedAt: time.Now(),

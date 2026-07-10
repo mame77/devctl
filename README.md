@@ -51,6 +51,7 @@ bind d run-shell 'tmux display-popup -d "#{pane_current_path}" -E -w 100% -h 100
 | `Enter` / `g` | jump to selected project (tmux) |
 | `Ctrl+G` | fzf pick any ghq repo → jump |
 | `Space` | start / switch (kills others) |
+| `o` | open primary port in default browser (`http://localhost:<first port>`) |
 | `x` | kill selected |
 | `a` | kill all |
 | `r` | reload |
@@ -97,7 +98,8 @@ port = 3000
 # ~/.config/devctl/projects/github.com/digeon-inc/jal-eap.toml
 name = "jal-eap"
 command = "npm run dev --prefix app"
-port = 3000
+ports = [3000, 8787]   # 先頭が UI（`o` で開く / 表示の primary）
+# port = 3000          # 単一ポートならこちらでも可
 ```
 
 ### Per-repo (in repository, highest priority)
@@ -106,4 +108,6 @@ port = 3000
 # <repo>/.devctl.toml
 name = "jal-eap"
 command = "npm run dev --prefix app"
-```State/logs: `~/.local/state/devctl/`
+ports = [3000, 8787]   # first = UI port for `o` and display
+```
+State/logs: `~/.local/state/devctl/`

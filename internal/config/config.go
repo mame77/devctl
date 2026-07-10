@@ -13,7 +13,8 @@ type Project struct {
 	Name    string `toml:"name"`
 	Path    string `toml:"path"`
 	Command string `toml:"command"`
-	Port    int    `toml:"port"`
+	Port    int    `toml:"port"`  // legacy single port
+	Ports   []int  `toml:"ports"` // preferred: multiple ports
 	Workdir string `toml:"workdir"`
 }
 
@@ -28,8 +29,35 @@ type Config struct {
 type ProjectFile struct {
 	Name    string `toml:"name"`
 	Command string `toml:"command"`
-	Port    int    `toml:"port"`
+	Port    int    `toml:"port"`  // legacy single port
+	Ports   []int  `toml:"ports"` // preferred: multiple ports
 	Workdir string `toml:"workdir"`
+}
+
+// NormalizePorts merges ports + legacy port into a unique ordered list.
+func NormalizePorts(ports []int, port int) []int {
+	seen := map[int]bool{}
+	var out []int
+	add := func(p int) {
+		if p <= 0 || seen[p] {
+			return
+		}
+		seen[p] = true
+		out = append(out, p)
+	}
+	for _, p := range ports {
+		add(p)
+	}
+	add(port)
+	return out
+}
+
+func (p Project) AllPorts() []int {
+	return NormalizePorts(p.Ports, p.Port)
+}
+
+func (p ProjectFile) AllPorts() []int {
+	return NormalizePorts(p.Ports, p.Port)
 }
 
 func Default() Config {
@@ -270,7 +298,7 @@ func EnsureProjectFile(dir, name string) (string, error) {
 		name = filepath.Base(dir)
 	}
 	content := fmt.Sprintf(
-		"# repo: %s\nname = %q\n# command = \"npm run dev\"\n# port = 3000\n",
+		"# repo: %s\nname = %q\n# command = \"npm run dev\"\n# ports = [3000, 8787]\n",
 		filepath.Clean(dir),
 		name,
 	)

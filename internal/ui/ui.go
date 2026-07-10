@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"syscall"
 	"time"
 	"unicode"
 
@@ -73,7 +74,7 @@ func (m *Model) reload() {
 		selected = filtered[m.cursor].Name
 	}
 	m.allItems = items
-	m.errMsg = ""
+	// do not clear errMsg/status here — tick reloads must not hide feedback
 	m.cursor = 0
 	if selected != "" {
 		for i, it := range m.filtered() {
@@ -320,6 +321,24 @@ func (m Model) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 			return doneMsg{status: "killed all"}
 		}
+	case "o":
+		if len(items) == 0 {
+			return m, nil
+		}
+		it := items[m.cursor]
+		port := it.PrimaryPort()
+		if port <= 0 {
+			return m, func() tea.Msg {
+				return doneMsg{err: fmt.Errorf("%s has no port (set ports = [ui, ...])", it.Name)}
+			}
+		}
+		url := fmt.Sprintf("http://localhost:%d", port)
+		return m, func() tea.Msg {
+			if err := openURL(url); err != nil {
+				return doneMsg{err: err}
+			}
+			return doneMsg{status: fmt.Sprintf("opened %s", url)}
+		}
 	}
 	return m, nil
 }
@@ -413,14 +432,10 @@ func (m Model) renderItem(i int, it session.Item) string {
 	extra := ""
 	if it.Running {
 		mark = runningStyle.Render("●")
-		label := "  running"
-		if it.Port > 0 {
-			label += fmt.Sprintf("  :%d", it.Port)
-		}
 		if i == m.cursor {
-			extra = cursorStyle.Render(label)
+			extra = cursorStyle.Render("  running")
 		} else {
-			extra = runningStyle.Render(label)
+			extra = runningStyle.Render("  running")
 		}
 	} else if it.Done {
 		mark = statusStyle.Render("✓")
@@ -428,12 +443,6 @@ func (m Model) renderItem(i int, it session.Item) string {
 			extra = cursorStyle.Render("  Done")
 		} else {
 			extra = statusStyle.Render("  Done")
-		}
-	} else if it.Port > 0 {
-		if i == m.cursor {
-			extra = cursorStyle.Render(fmt.Sprintf("  :%d", it.Port))
-		} else {
-			extra = dimStyle.Render(fmt.Sprintf("  :%d", it.Port))
 		}
 	}
 
@@ -459,9 +468,12 @@ func (m Model) View() string {
 	for _, it := range m.allItems {
 		if it.Running {
 			activeName = it.Name
-			activeExtra = fmt.Sprintf(" (pid %d)", it.PID)
-			if it.Port > 0 {
-				activeExtra += fmt.Sprintf("  port %d", it.Port)
+			if len(it.Ports) > 0 {
+				parts := make([]string, len(it.Ports))
+				for i, p := range it.Ports {
+					parts[i] = fmt.Sprintf("%d", p)
+				}
+				activeExtra = "  :" + strings.Join(parts, " :")
 			}
 			break
 		}
@@ -537,7 +549,7 @@ func (m Model) View() string {
 	if m.searching {
 		help = "type to filter  enter done  esc cancel input  ↑↓ move  ctrl+u clear"
 	} else {
-		help = "j/k move  / search  e edit  enter/g jump  ^g fzf  space start  x kill  a kill-all  r reload  q quit"
+		help = "j/k move  / search  e edit  enter/g jump  ^g fzf  space start  o open  x kill  a kill-all  r reload  q quit"
 		if len(items) > listRows || m.query != "" {
 			help = fmt.Sprintf("%s  (%d/%d)", help, m.cursor+1, len(items))
 		}
@@ -554,6 +566,214 @@ func (m Model) View() string {
 		th = ph
 	}
 	return lipgloss.Place(tw, th, lipgloss.Center, lipgloss.Center, panel)
+}
+
+func openURL(url string) error {
+	type candidate struct {
+		bin  string
+		args []string
+	}
+	var cands []candidate
+
+	// $BROWSER: "firefox", "chromium %s", etc.
+	if b := strings.TrimSpace(os.Getenv("BROWSER")); b != "" {
+		if strings.Contains(b, "%s") {
+			parts := strings.Fields(strings.ReplaceAll(b, "%s", url))
+			if len(parts) > 0 {
+				cands = append(cands, candidate{bin: parts[0], args: parts[1:]})
+			}
+		} else {
+			parts := strings.Fields(b)
+			cands = append(cands, candidate{bin: parts[0], args: append(parts[1:], url)})
+		}
+	}
+
+	for _, bin := range []string{
+		"xdg-open", "gio", "sensible-browser", "open",
+		"chromium", "chromium-browser", "google-chrome-stable", "google-chrome",
+		"firefox", "brave", "brave-browser", "microsoft-edge",
+	} {
+		args := []string{url}
+		if bin == "gio" {
+			args = []string{"open", url}
+		}
+		cands = append(cands, candidate{bin: bin, args: args})
+	}
+
+	env := browserEnv()
+	if !hasDisplay(env) {
+		return fmt.Errorf("no display (DISPLAY/WAYLAND_DISPLAY unset); open %s manually", url)
+	}
+
+	var lastErr error
+	var tried []string
+	for _, c := range cands {
+		path, err := exec.LookPath(c.bin)
+		if err != nil {
+			continue
+		}
+		tried = append(tried, c.bin)
+
+		stderr, err := os.CreateTemp("", "devctl-browser-*.log")
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		cmd := exec.Command(path, c.args...)
+		cmd.Env = env
+		cmd.Stdout = nil
+		cmd.Stderr = stderr
+		cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+		if err := cmd.Start(); err != nil {
+			stderr.Close()
+			os.Remove(stderr.Name())
+			lastErr = err
+			continue
+		}
+
+		// detect immediate failure (e.g. chromium missing X server)
+		done := make(chan error, 1)
+		go func() { done <- cmd.Wait() }()
+		select {
+		case err := <-done:
+			msg := readTrim(stderr.Name())
+			stderr.Close()
+			os.Remove(stderr.Name())
+			if err != nil {
+				lastErr = err
+				if msg != "" {
+					lastErr = fmt.Errorf("%s: %s", c.bin, firstLine(msg))
+				}
+				continue
+			}
+			// exited 0 quickly — still treat as attempt; try next only if error-like msg
+			if strings.Contains(strings.ToLower(msg), "missing x server") ||
+				strings.Contains(strings.ToLower(msg), "cannot open display") {
+				lastErr = fmt.Errorf("%s: %s", c.bin, firstLine(msg))
+				continue
+			}
+			return nil
+		case <-time.After(400 * time.Millisecond):
+			// still running — assume browser is up
+			stderr.Close()
+			os.Remove(stderr.Name())
+			return nil
+		}
+	}
+	if len(tried) == 0 {
+		return fmt.Errorf("no browser found (set $BROWSER or install chromium/firefox/xdg-open)")
+	}
+	if lastErr != nil {
+		return fmt.Errorf("open browser failed: %w", lastErr)
+	}
+	return fmt.Errorf("failed to open browser (tried %s)", strings.Join(tried, ", "))
+}
+
+func hasDisplay(env []string) bool {
+	for _, e := range env {
+		if strings.HasPrefix(e, "DISPLAY=") && len(e) > len("DISPLAY=") {
+			return true
+		}
+		if strings.HasPrefix(e, "WAYLAND_DISPLAY=") && len(e) > len("WAYLAND_DISPLAY=") {
+			return true
+		}
+	}
+	return false
+}
+
+// browserEnv returns os.Environ(), filling DISPLAY/WAYLAND_DISPLAY from
+// other user processes when the current shell has none (e.g. plain TTY).
+func browserEnv() []string {
+	env := os.Environ()
+	if os.Getenv("DISPLAY") != "" || os.Getenv("WAYLAND_DISPLAY") != "" {
+		return env
+	}
+	disp, wayland, runtime := discoverDisplayEnv()
+	if disp == "" && wayland == "" {
+		return env
+	}
+	out := make([]string, 0, len(env)+3)
+	for _, e := range env {
+		if strings.HasPrefix(e, "DISPLAY=") ||
+			strings.HasPrefix(e, "WAYLAND_DISPLAY=") ||
+			strings.HasPrefix(e, "XDG_RUNTIME_DIR=") {
+			continue
+		}
+		out = append(out, e)
+	}
+	if disp != "" {
+		out = append(out, "DISPLAY="+disp)
+	}
+	if wayland != "" {
+		out = append(out, "WAYLAND_DISPLAY="+wayland)
+	}
+	if runtime != "" {
+		out = append(out, "XDG_RUNTIME_DIR="+runtime)
+	} else if v := os.Getenv("XDG_RUNTIME_DIR"); v != "" {
+		out = append(out, "XDG_RUNTIME_DIR="+v)
+	}
+	return out
+}
+
+func discoverDisplayEnv() (display, wayland, runtime string) {
+	entries, err := os.ReadDir("/proc")
+	if err != nil {
+		return "", "", ""
+	}
+	uid := fmt.Sprintf("%d", os.Getuid())
+	for _, ent := range entries {
+		if !ent.IsDir() {
+			continue
+		}
+		name := ent.Name()
+		if name[0] < '1' || name[0] > '9' {
+			continue
+		}
+		// only same user
+		st, err := os.Stat("/proc/" + name)
+		if err != nil {
+			continue
+		}
+		if sys, ok := st.Sys().(*syscall.Stat_t); ok {
+			if fmt.Sprintf("%d", sys.Uid) != uid {
+				continue
+			}
+		}
+		data, err := os.ReadFile("/proc/" + name + "/environ")
+		if err != nil {
+			continue
+		}
+		for _, part := range strings.Split(string(data), "\x00") {
+			if display == "" && strings.HasPrefix(part, "DISPLAY=") {
+				display = strings.TrimPrefix(part, "DISPLAY=")
+			}
+			if wayland == "" && strings.HasPrefix(part, "WAYLAND_DISPLAY=") {
+				wayland = strings.TrimPrefix(part, "WAYLAND_DISPLAY=")
+			}
+			if runtime == "" && strings.HasPrefix(part, "XDG_RUNTIME_DIR=") {
+				runtime = strings.TrimPrefix(part, "XDG_RUNTIME_DIR=")
+			}
+		}
+		if display != "" || wayland != "" {
+			return display, wayland, runtime
+		}
+	}
+	return display, wayland, runtime
+}
+
+func readTrim(path string) string {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(b))
+}
+
+func firstLine(s string) string {
+	if i := strings.IndexByte(s, '\n'); i >= 0 {
+		return strings.TrimSpace(s[:i])
+	}
+	return s
 }
 
 func openProjectEditor(dir, name string) tea.Cmd {

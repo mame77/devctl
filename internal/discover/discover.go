@@ -15,7 +15,7 @@ type Project struct {
 	Name     string
 	Path     string
 	Command  string
-	Port     int
+	Ports    []int
 	Source   string // "config" | "scan" | "ghq"
 	Runnable bool   // command set manually (config or .devctl.toml)
 }
@@ -37,7 +37,7 @@ func Discover(cfg config.Config) ([]Project, error) {
 			Name:     name,
 			Path:     path,
 			Command:  p.Command,
-			Port:     p.Port,
+			Ports:    p.AllPorts(),
 			Source:   "config",
 			Runnable: p.Command != "",
 		}
@@ -169,7 +169,7 @@ func addRepoRoot(root string, byPath map[string]Project, source string) {
 
 	name := filepath.Base(root)
 	cmd := ""
-	port := 0
+	var ports []int
 	runnable := false
 
 	if pf, err := config.LoadProjectFile(root); err == nil {
@@ -180,14 +180,14 @@ func addRepoRoot(root string, byPath map[string]Project, source string) {
 			cmd = pf.Command
 			runnable = true
 		}
-		port = pf.Port
+		ports = pf.AllPorts()
 	}
 
 	byPath[root] = Project{
 		Name:     name,
 		Path:     root,
 		Command:  cmd,
-		Port:     port,
+		Ports:    ports,
 		Source:   source,
 		Runnable: runnable,
 	}
