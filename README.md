@@ -60,21 +60,23 @@ bind d run-shell 'tmux display-popup -d "#{pane_current_path}" -E -w 100% -h 100
 ## Project discovery
 
 1. Explicit `[[projects]]` in config (highest priority)
-2. `ghq list --full-path` when `ghq` is available
-3. Otherwise walk `scan_roots`
+2. `ghq list --full-path` — **one entry per repository root**
+3. Otherwise walk `scan_roots` for `.git` roots
 
-Detected automatically:
+Each list item is a **repo root** only (no monorepo subdirs).
 
-- `.devctl.toml` in a repo (or monorepo subdir)
-- `package.json` with a `dev` script (lockfile から `npm`/`pnpm`/`yarn`/`bun` を推定)
+**Command is manual.** Space start works only when you set `command` in:
 
-Monorepo は直下 + 1階層のサブディレクトリも見る（例: `app/`, `packages/web`）。
+- global `[[projects]]`, or
+- repo `.devctl.toml`
+
+Otherwise shown as jump-only (`○ jump`).
 
 ### Global `~/.config/devctl/config.toml`
 
 ```toml
-default_command = "npm run dev"
-# ghq がないときのフォールバック
+# optional default only applied when [[projects]] omits command
+# default_command = "npm run dev"
 scan_roots = ["~/ghq"]
 scan_depth = 6
 
@@ -88,9 +90,8 @@ port = 3000
 ### Project `.devctl.toml`
 
 ```toml
-name = "my-app"
-command = "npm run dev"
+name = "jal-eap"
+command = "npm run dev --prefix app"
 port = 3000
 ```
-
 State/logs: `~/.local/state/devctl/`

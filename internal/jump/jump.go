@@ -11,9 +11,115 @@ import (
 	"github.com/mame77/devctl/internal/config"
 )
 
-// SessionName returns the tmux session name for a path (directory basename).
+// generic leaf dirs that collide across monorepos
+var genericLeaf = map[string]bool{
+	"app": true, "web": true, "api": true, "frontend": true, "backend": true,
+	"server": true, "client": true, "packages": true, "src": true, "apps": true,
+}
+
+// SessionName returns a unique, tmux-safe session name for path.
+// Monorepo leaves like .../jal-eap/app become "jal-eap-app", not "app".
 func SessionName(path string) string {
-	return filepath.Base(filepath.Clean(path))
+	path = filepath.Clean(path)
+	base := filepath.Base(path)
+	parent := filepath.Base(filepath.Dir(path))
+	name := base
+	if genericLeaf[base] && parent != "" && parent != "." && parent != string(filepath.Separator) {
+		name = parent + "-" + base
+	}
+	return sanitizeSessionName(name)
+}
+
+func sanitizeSessionName(name string) string {
+	// tmux rejects '.', ':', and '/' in session names
+	replacer := strings.NewReplacer(
+		"/", "-",
+		":", "-",
+		".", "-",
+		" ", "-",
+	)
+	name = replacer.Replace(name)
+	name = strings.Trim(name, "-")
+	if name == "" {
+		return "devctl"
+	}
+	return name
+}
+
+// uniqueSessionName ensures the name is free or already points at path.
+func uniqueSessionName(path string) string {
+	path = filepath.Clean(path)
+	name := SessionName(path)
+	if canUseSession(name, path) {
+		return name
+	}
+	// collision: same basename, different repo — use owner-repo
+	parts := strings.Split(filepath.ToSlash(path), "/")
+	for len(parts) > 0 && parts[0] == "" {
+		parts = parts[1:]
+	}
+	if n := len(parts); n >= 2 {
+		cand := sanitizeSessionName(parts[n-2] + "-" + parts[n-1])
+		if cand != name && canUseSession(cand, path) {
+			return cand
+		}
+	}
+	for i := 2; i < 100; i++ {
+		cand := fmt.Sprintf("%s-%d", name, i)
+		if canUseSession(cand, path) {
+			return cand
+		}
+	}
+	return name
+}
+
+// canUseSession is true if name is free, or already targets path.
+func canUseSession(name, path string) bool {
+	if !tmuxHasSession(name) {
+		return true
+	}
+	sp := sessionPath(name)
+	// unknown path: reuse name (matches bashrc basename behavior)
+	if sp == "" {
+		return true
+	}
+	return samePath(sp, path)
+}
+
+func samePath(a, b string) bool {
+	if a == "" || b == "" {
+		return false
+	}
+	aa, err1 := filepath.Abs(a)
+	bb, err2 := filepath.Abs(b)
+	if err1 != nil || err2 != nil {
+		return filepath.Clean(a) == filepath.Clean(b)
+	}
+	return aa == bb
+}
+
+func sessionPath(name string) string {
+	// prefer session_path; fall back to first pane cwd
+	out, err := tmuxOutput("display-message", "-t", "="+name, "-p", "#{session_path}")
+	if err == nil {
+		out = strings.TrimSpace(out)
+		if out != "" {
+			return filepath.Clean(out)
+		}
+	}
+	out, err = tmuxOutput("list-panes", "-t", "="+name, "-F", "#{pane_current_path}")
+	if err != nil {
+		return ""
+	}
+	// first line only
+	if i := strings.IndexByte(out, '\n'); i >= 0 {
+		out = out[:i]
+	}
+	out = strings.TrimSpace(out)
+	if out == "" {
+		return ""
+	}
+	return filepath.Clean(out)
 }
 
 func pendingPath() (string, error) {
@@ -24,8 +130,8 @@ func pendingPath() (string, error) {
 	return filepath.Join(dir, "jump-target"), nil
 }
 
-// SetPending records a session name to switch to after a tmux popup closes.
-func SetPending(session string) error {
+// SetPending records session name + path for post-popup switch.
+func SetPending(session, dir string) error {
 	path, err := pendingPath()
 	if err != nil {
 		return err
@@ -33,25 +139,35 @@ func SetPending(session string) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
-	return os.WriteFile(path, []byte(session+"\n"), 0o600)
+	// line1: session name, line2: path (optional, for recreate)
+	content := session + "\n" + filepath.Clean(dir) + "\n"
+	return os.WriteFile(path, []byte(content), 0o600)
 }
 
 // ConsumePending reads and clears the pending jump target.
-// Returns "" if none.
-func ConsumePending() (string, error) {
+// Returns session name, path, error. Empty session means none.
+func ConsumePending() (session, dir string, err error) {
 	path, err := pendingPath()
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return "", nil
+			return "", "", nil
 		}
-		return "", err
+		return "", "", err
 	}
 	_ = os.Remove(path)
-	return strings.TrimSpace(string(data)), nil
+	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
+	if len(lines) == 0 {
+		return "", "", nil
+	}
+	session = strings.TrimSpace(lines[0])
+	if len(lines) > 1 {
+		dir = strings.TrimSpace(lines[1])
+	}
+	return session, dir, nil
 }
 
 // ClearPending removes any pending jump without applying it.
@@ -86,28 +202,28 @@ func To(path string) error {
 		return fmt.Errorf("tmux not found in PATH")
 	}
 
-	name := SessionName(path)
+	name := uniqueSessionName(path)
 	inTmux := os.Getenv("TMUX") != ""
 	inPopup := InPopup()
 
 	if inPopup {
-		if err := SetPending(name); err != nil {
+		if err := SetPending(name, path); err != nil {
 			return err
 		}
 	} else {
 		ClearPending()
 	}
 
-	if inTmux {
+	if inTmux && !inPopup {
 		current, err := tmuxOutput("display-message", "-p", "#S")
-		if err == nil && current == name && !inPopup {
+		if err == nil && current == name && sessionPath(name) == path {
 			return nil
 		}
 	}
 
 	if !tmuxHasSession(name) {
 		if err := runTmux("new-session", "-ds", name, "-c", path); err != nil {
-			return err
+			return fmt.Errorf("tmux new-session %q: %w", name, err)
 		}
 	}
 
@@ -123,8 +239,9 @@ func To(path string) error {
 }
 
 // ApplyPending switches to a previously recorded session (for after popup exit).
+// Missing pending is a no-op (exit 0) so quitting the TUI without jump is fine.
 func ApplyPending() error {
-	name, err := ConsumePending()
+	name, dir, err := ConsumePending()
 	if err != nil {
 		return err
 	}
@@ -132,9 +249,22 @@ func ApplyPending() error {
 		return nil
 	}
 	if !tmuxHasSession(name) {
-		return fmt.Errorf("session %q not found", name)
+		// recreate if we still know the path
+		if dir != "" {
+			if st, err := os.Stat(dir); err == nil && st.IsDir() {
+				if err := runTmux("new-session", "-ds", name, "-c", dir); err != nil {
+					return nil // don't fail popup close
+				}
+			} else {
+				return nil
+			}
+		} else {
+			return nil
+		}
 	}
-	return runTmux("switch-client", "-t", "="+name)
+	// switch-client errors should not break run-shell loudly when already on target
+	_ = runTmux("switch-client", "-t", "="+name)
+	return nil
 }
 
 func tmuxHasSession(name string) bool {

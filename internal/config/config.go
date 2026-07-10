@@ -33,13 +33,11 @@ type ProjectFile struct {
 }
 
 func Default() Config {
-	roots := []string{"~/ghq"}
-	// prefer ghq root when available (resolved later in Load if needed)
 	return Config{
-		DefaultCommand: "npm run dev",
-		ScanRoots:      roots,
+		DefaultCommand: "",
+		ScanRoots:      []string{"~/ghq"},
 		ScanDepth:      6,
-		ScanMarkers:    []string{".devctl.toml", "package.json"},
+		ScanMarkers:    []string{".devctl.toml"},
 		Projects:       nil,
 	}
 }
@@ -103,18 +101,16 @@ func Load() (Config, error) {
 	if _, err := toml.Decode(string(data), &cfg); err != nil {
 		return cfg, fmt.Errorf("parse config: %w", err)
 	}
-	if cfg.DefaultCommand == "" {
-		cfg.DefaultCommand = "npm run dev"
-	}
 	if cfg.ScanDepth <= 0 {
 		cfg.ScanDepth = 6
 	}
 	if len(cfg.ScanMarkers) == 0 {
-		cfg.ScanMarkers = []string{".devctl.toml", "package.json"}
+		cfg.ScanMarkers = []string{".devctl.toml"}
 	}
 	for i := range cfg.Projects {
 		cfg.Projects[i].Path = ExpandPath(cfg.Projects[i].Path)
-		if cfg.Projects[i].Command == "" {
+		// command is manual only; do not invent defaults
+		if cfg.Projects[i].Command == "" && cfg.DefaultCommand != "" {
 			cfg.Projects[i].Command = cfg.DefaultCommand
 		}
 		if cfg.Projects[i].Name == "" {
