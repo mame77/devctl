@@ -251,8 +251,11 @@ func (m Model) renderItem(i int, it session.Item) string {
 	}
 
 	src := ""
-	if it.Source == "scan" {
+	switch it.Source {
+	case "scan":
 		src = dimStyle.Render("  [scan]")
+	case "ghq":
+		src = dimStyle.Render("  [ghq]")
 	}
 
 	return fmt.Sprintf("%s%s %s%s%s", cursor, mark, name, extra, src)
@@ -296,8 +299,8 @@ func (m Model) View() string {
 	// fixed-height list viewport
 	if len(m.items) == 0 {
 		empty := []string{
-			dimStyle.Render("(no projects — add [[projects]] in ~/.config/devctl/config.toml"),
-			dimStyle.Render(" or place .devctl.toml under scan_roots)"),
+			dimStyle.Render("(no projects — ghq repos with package.json \"dev\" script,"),
+			dimStyle.Render(" .devctl.toml, or [[projects]] in config are listed)"),
 		}
 		for i := 0; i < listRows; i++ {
 			if i < len(empty) {

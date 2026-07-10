@@ -33,13 +33,26 @@ devctl init         # カレントに .devctl.toml を生成
 
 ## Config
 
+## Project discovery
+
+1. Explicit `[[projects]]` in config (highest priority)
+2. `ghq list --full-path` when `ghq` is available
+3. Otherwise walk `scan_roots`
+
+Detected automatically:
+
+- `.devctl.toml` in a repo (or monorepo subdir)
+- `package.json` with a `dev` script (lockfile から `npm`/`pnpm`/`yarn`/`bun` を推定)
+
+Monorepo は直下 + 1階層のサブディレクトリも見る（例: `app/`, `packages/web`）。
+
 ### Global `~/.config/devctl/config.toml`
 
 ```toml
 default_command = "npm run dev"
+# ghq がないときのフォールバック
 scan_roots = ["~/ghq"]
-scan_depth = 5
-scan_markers = [".devctl.toml"]
+scan_depth = 6
 
 [[projects]]
 name = "goal-share"
@@ -57,4 +70,3 @@ port = 3000
 ```
 
 State/logs: `~/.local/state/devctl/`
-# devctl

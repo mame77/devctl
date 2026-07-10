@@ -33,11 +33,13 @@ type ProjectFile struct {
 }
 
 func Default() Config {
+	roots := []string{"~/ghq"}
+	// prefer ghq root when available (resolved later in Load if needed)
 	return Config{
 		DefaultCommand: "npm run dev",
-		ScanRoots:      []string{"~/ghq"},
-		ScanDepth:      5,
-		ScanMarkers:    []string{".devctl.toml"},
+		ScanRoots:      roots,
+		ScanDepth:      6,
+		ScanMarkers:    []string{".devctl.toml", "package.json"},
 		Projects:       nil,
 	}
 }
@@ -105,10 +107,10 @@ func Load() (Config, error) {
 		cfg.DefaultCommand = "npm run dev"
 	}
 	if cfg.ScanDepth <= 0 {
-		cfg.ScanDepth = 5
+		cfg.ScanDepth = 6
 	}
 	if len(cfg.ScanMarkers) == 0 {
-		cfg.ScanMarkers = []string{".devctl.toml"}
+		cfg.ScanMarkers = []string{".devctl.toml", "package.json"}
 	}
 	for i := range cfg.Projects {
 		cfg.Projects[i].Path = ExpandPath(cfg.Projects[i].Path)
