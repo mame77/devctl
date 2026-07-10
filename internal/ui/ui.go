@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
@@ -59,6 +60,11 @@ type Model struct {
 func New(mgr *session.Manager) Model {
 	m := Model{mgr: mgr}
 	m.reload()
+	// initial open: cursor on repo matching cwd
+	if idx := indexForCwd(m.filtered()); idx >= 0 {
+		m.cursor = idx
+		m.ensureVisible(m.listRows())
+	}
 	return m
 }
 
@@ -86,6 +92,38 @@ func (m *Model) reload() {
 	}
 	m.clampCursor()
 	m.ensureVisible(m.listRows())
+}
+
+// indexForCwd returns the filtered-list index for the project that best matches
+// the current working directory (exact path, or cwd under project root).
+func indexForCwd(items []session.Item) int {
+	cwd, err := os.Getwd()
+	if err != nil {
+		return -1
+	}
+	cwd, err = filepath.Abs(cwd)
+	if err != nil {
+		return -1
+	}
+	cwd = filepath.Clean(cwd)
+
+	best := -1
+	bestLen := -1
+	for i, it := range items {
+		p, err := filepath.Abs(it.Path)
+		if err != nil {
+			p = filepath.Clean(it.Path)
+		} else {
+			p = filepath.Clean(p)
+		}
+		if cwd == p || strings.HasPrefix(cwd, p+string(os.PathSeparator)) {
+			if len(p) > bestLen {
+				best = i
+				bestLen = len(p)
+			}
+		}
+	}
+	return best
 }
 
 func (m Model) filtered() []session.Item {
@@ -437,6 +475,9 @@ func (m Model) renderItem(i int, it session.Item) string {
 	if it.Running {
 		mark = runningStyle.Render("●")
 		extra = runningStyle.Render("  running")
+	} else if it.Failed {
+		mark = errStyle.Render("✗")
+		extra = errStyle.Render("  failed")
 	} else if it.Done {
 		mark = statusStyle.Render("✓")
 		extra = statusStyle.Render("  Done")

@@ -19,7 +19,10 @@ func Alive(pid int) bool {
 	return proc.Signal(syscall.Signal(0)) == nil
 }
 
-func Start(command, cwd, logPath string) (pid, pgid int, err error) {
+// OnExit is called after the process exits (from a background goroutine).
+type OnExit func(exitCode int)
+
+func Start(command, cwd, logPath string, onExit OnExit) (pid, pgid int, err error) {
 	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
 	if err != nil {
 		return 0, 0, fmt.Errorf("open log: %w", err)
@@ -43,11 +46,21 @@ func Start(command, cwd, logPath string) (pid, pgid int, err error) {
 	}
 
 	go func() {
-		_ = cmd.Wait()
+		waitErr := cmd.Wait()
 		logFile.Close()
+		code := 0
+		if waitErr != nil {
+			if ee, ok := waitErr.(*exec.ExitError); ok {
+				code = ee.ExitCode()
+			} else {
+				code = 1
+			}
+		}
+		if onExit != nil {
+			onExit(code)
+		}
 	}()
 
-	// allow one-shot commands (go install, etc.); caller tracks alive/done
 	return pid, pgid, nil
 }
 

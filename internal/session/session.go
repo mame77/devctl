@@ -17,7 +17,8 @@ type Item struct {
 	Command  string
 	Ports    []int
 	Running  bool
-	Done     bool // finished recently; shows "Done" briefly
+	Done     bool // one-shot finished OK; shows "Done" briefly
+	Failed   bool // process exited unexpectedly / non-zero
 	PID      int
 	PGID     int
 	Source   string
@@ -65,9 +66,9 @@ func (m *Manager) List() ([]Item, error) {
 	statusByName := map[string]state.Entry{}
 	for _, e := range entries {
 		if process.Alive(e.PID) {
-			// still running — clear any stale finished marker
 			if e.FinishedAt != nil {
 				e.FinishedAt = nil
+				e.ExitCode = nil
 				_ = state.Save(e)
 			}
 			statusByName[e.Name] = e
@@ -77,6 +78,14 @@ func (m *Manager) List() ([]Item, error) {
 		now := time.Now()
 		if e.FinishedAt == nil {
 			e.FinishedAt = &now
+			// unknown exit — treat port servers as fail, one-shots as done
+			if e.ExitCode == nil {
+				code := 0
+				if len(config.NormalizePorts(e.Ports, e.Port)) > 0 {
+					code = 1
+				}
+				e.ExitCode = &code
+			}
 			_ = state.Save(e)
 		}
 		if now.Sub(*e.FinishedAt) < state.DoneTTL {
@@ -104,8 +113,11 @@ func (m *Manager) List() ([]Item, error) {
 			}
 			if process.Alive(e.PID) {
 				it.Running = true
-			} else {
+			} else if e.ExitCode != nil && *e.ExitCode == 0 && len(config.NormalizePorts(e.Ports, e.Port)) == 0 {
 				it.Done = true
+			} else {
+				// port-based server died, or non-zero exit
+				it.Failed = true
 			}
 		}
 		items = append(items, it)
@@ -217,10 +229,26 @@ func (m *Manager) StartSwitch(name string) error {
 	if err != nil {
 		return err
 	}
-	pid, pgid, err := process.Start(target.Command, target.Path, logPath)
+	nameForCB := target.Name
+	var startedPID int
+	pid, pgid, err := process.Start(target.Command, target.Path, logPath, func(exitCode int) {
+		e, err := state.Load(nameForCB)
+		if err != nil {
+			return
+		}
+		// only update if still the same pid
+		if e.PID != startedPID {
+			return
+		}
+		now := time.Now()
+		e.FinishedAt = &now
+		e.ExitCode = &exitCode
+		_ = state.Save(e)
+	})
 	if err != nil {
 		return err
 	}
+	startedPID = pid
 	primary := 0
 	if len(target.Ports) > 0 {
 		primary = target.Ports[0]
