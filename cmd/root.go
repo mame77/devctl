@@ -1,0 +1,156 @@
+package cmd
+
+import (
+	"fmt"
+	"os"
+	"path/filepath"
+	"text/tabwriter"
+
+	"github.com/mame77/devctl/internal/config"
+	"github.com/mame77/devctl/internal/session"
+	"github.com/mame77/devctl/internal/ui"
+	"github.com/spf13/cobra"
+)
+
+var rootCmd = &cobra.Command{
+	Use:   "devctl",
+	Short: "TUI to manage dev servers across repositories",
+	Long:  "devctl lists configured/scanned projects and lets you start/switch/kill dev processes (one at a time).",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return runTUI()
+	},
+}
+
+var tuiCmd = &cobra.Command{
+	Use:   "tui",
+	Short: "Open the TUI",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return runTUI()
+	},
+}
+
+var statusCmd = &cobra.Command{
+	Use:   "status",
+	Short: "Show running dev processes",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		mgr, err := session.New()
+		if err != nil {
+			return err
+		}
+		items, err := mgr.List()
+		if err != nil {
+			return err
+		}
+		w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+		fmt.Fprintln(w, "NAME\tPID\tPORT\tSTATUS\tPATH")
+		any := false
+		for _, it := range items {
+			st := "stopped"
+			pid := "-"
+			port := "-"
+			if it.Running {
+				any = true
+				st = "running"
+				pid = fmt.Sprintf("%d", it.PID)
+			}
+			if it.Port > 0 {
+				port = fmt.Sprintf("%d", it.Port)
+			}
+			if it.Running {
+				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", it.Name, pid, port, st, it.Path)
+			}
+		}
+		_ = w.Flush()
+		if !any {
+			fmt.Println("(none running)")
+		}
+		return nil
+	},
+}
+
+var startCmd = &cobra.Command{
+	Use:   "start <name>",
+	Short: "Start a project (kills any other running project)",
+	Args:  cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		mgr, err := session.New()
+		if err != nil {
+			return err
+		}
+		if err := mgr.StartSwitch(args[0]); err != nil {
+			return err
+		}
+		fmt.Printf("started %s\n", args[0])
+		return nil
+	},
+}
+
+var killAll bool
+
+var killCmd = &cobra.Command{
+	Use:   "kill [name]",
+	Short: "Kill a running project (or --all)",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		mgr, err := session.New()
+		if err != nil {
+			return err
+		}
+		if killAll {
+			if err := mgr.KillAll(); err != nil {
+				return err
+			}
+			fmt.Println("killed all")
+			return nil
+		}
+		if len(args) < 1 {
+			return fmt.Errorf("usage: devctl kill <name> | devctl kill --all")
+		}
+		if err := mgr.Kill(args[0]); err != nil {
+			return err
+		}
+		fmt.Printf("killed %s\n", args[0])
+		return nil
+	},
+}
+
+var initCmd = &cobra.Command{
+	Use:   "init",
+	Short: "Write .devctl.toml in the current directory",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		cwd, err := os.Getwd()
+		if err != nil {
+			return err
+		}
+		path := filepath.Join(cwd, ".devctl.toml")
+		if _, err := os.Stat(path); err == nil {
+			return fmt.Errorf("%s already exists", path)
+		}
+		pf := config.ProjectFile{
+			Name:    filepath.Base(cwd),
+			Command: "npm run dev",
+			Port:    3000,
+		}
+		if err := config.WriteProjectFile(cwd, pf); err != nil {
+			return err
+		}
+		fmt.Printf("wrote %s\n", path)
+		return nil
+	},
+}
+
+func runTUI() error {
+	mgr, err := session.New()
+	if err != nil {
+		return err
+	}
+	return ui.Run(mgr)
+}
+
+func Execute() {
+	killCmd.Flags().BoolVar(&killAll, "all", false, "kill all running projects")
+	rootCmd.AddCommand(tuiCmd, statusCmd, startCmd, killCmd, initCmd)
+	if err := rootCmd.Execute(); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+}
