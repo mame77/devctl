@@ -44,15 +44,17 @@ bind d run-shell 'tmux display-popup -d "#{pane_current_path}" -E -w 100% -h 100
 
 | Key | Action |
 |-----|--------|
-| `j` / `k` | move |
+| `j` / `k` | move (list or ports panel) |
+| `Tab` / `l` / `h` | focus ports panel / list |
+| `Ctrl+P` | toggle key help |
 | `/` | filter by repository name |
-| `Esc` | clear filter (or exit search input) |
-| `e` | edit repo `.devctl.toml` (`$EDITOR`, default nvim) |
+| `Esc` | close help / clear filter / leave ports focus |
+| `e` | edit repo config under `~/.config/devctl/projects/` |
 | `Enter` / `g` | jump to selected project (tmux) |
 | `Ctrl+G` | fzf pick any ghq repo → jump |
-| `Space` | start / switch (kills others) |
-| `o` | open primary port in default browser (`http://localhost:<first port>`) |
-| `x` | kill selected |
+| `Space` | start / switch (kills others with ports) |
+| `o` | open primary port in browser |
+| `x` | kill selected (list or ports panel) |
 | `a` | kill all |
 | `r` | reload |
 | `q` | quit TUI (dev keeps running) |

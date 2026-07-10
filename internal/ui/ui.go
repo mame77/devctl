@@ -18,10 +18,13 @@ import (
 )
 
 const (
-	maxPanelWidth  = 80
 	panelHeightPct = 70 // percent of terminal height
 	minPanelHeight = 10
 	minListRows    = 3
+	minRightWidth  = 20
+	maxRightWidth  = 28
+	maxTotalWidth  = 78 // keep UI compact and centered
+	minLeftWidth   = 36
 )
 
 var (
@@ -42,23 +45,26 @@ var (
 )
 
 type Model struct {
-	mgr      *session.Manager
-	allItems []session.Item // full list
-	cursor   int            // index into filtered list
-	offset   int            // list scroll offset
-	query    string         // name filter (case-insensitive substring)
-	searching bool          // typing into /
-	status   string
-	errMsg   string
-	width    int
-	height   int
-	quitting bool
-	jumpPath string // set when quitting to jump via tmux
-	wantFzf  bool   // quit then open fzf picker
+	mgr       *session.Manager
+	allItems  []session.Item // full list
+	cursor    int            // index into filtered list
+	offset    int            // list scroll offset
+	query     string         // name filter (case-insensitive substring)
+	searching bool           // typing into /
+	focus     string // "list" | "ports"
+	portCur   int    // cursor in running ports panel
+	showHelp  bool   // ctrl+p toggles key help overlay
+	status    string
+	errMsg    string
+	width     int
+	height    int
+	quitting  bool
+	jumpPath  string // set when quitting to jump via tmux
+	wantFzf   bool   // quit then open fzf picker
 }
 
 func New(mgr *session.Manager) Model {
-	m := Model{mgr: mgr}
+	m := Model{mgr: mgr, focus: "list"}
 	m.reload()
 	// initial open: cursor on repo matching cwd
 	if idx := indexForCwd(m.filtered()); idx >= 0 {
@@ -91,7 +97,32 @@ func (m *Model) reload() {
 		}
 	}
 	m.clampCursor()
+	m.clampPortCursor()
 	m.ensureVisible(m.listRows())
+}
+
+func (m Model) runningItems() []session.Item {
+	var out []session.Item
+	for _, it := range m.allItems {
+		if it.Running {
+			out = append(out, it)
+		}
+	}
+	return out
+}
+
+func (m *Model) clampPortCursor() {
+	n := len(m.runningItems())
+	if n == 0 {
+		m.portCur = 0
+		return
+	}
+	if m.portCur >= n {
+		m.portCur = n - 1
+	}
+	if m.portCur < 0 {
+		m.portCur = 0
+	}
 }
 
 // indexForCwd returns the filtered-list index for the project that best matches
@@ -256,7 +287,7 @@ func (m Model) updateSearch(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.ensureVisible(m.listRows())
 		}
 		return m, nil
-	case "up", "ctrl+p":
+	case "up":
 		if m.cursor > 0 {
 			m.cursor--
 			m.ensureVisible(m.listRows())
@@ -281,14 +312,50 @@ func (m Model) updateSearch(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 func (m Model) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	items := m.filtered()
+	running := m.runningItems()
+
 	switch msg.String() {
 	case "q", "ctrl+c":
 		m.quitting = true
 		return m, tea.Quit
+	case "ctrl+p":
+		m.showHelp = !m.showHelp
+		return m, nil
+	case "tab":
+		m.showHelp = false
+		if m.focus == "ports" {
+			m.focus = "list"
+		} else {
+			m.focus = "ports"
+			m.clampPortCursor()
+		}
+		return m, nil
+	case "l", "right":
+		if m.focus == "list" {
+			m.showHelp = false
+			m.focus = "ports"
+			m.clampPortCursor()
+		}
+		return m, nil
+	case "h", "left":
+		if m.focus == "ports" {
+			m.focus = "list"
+		}
+		return m, nil
 	case "/":
+		m.focus = "list"
+		m.showHelp = false
 		m.searching = true
 		return m, nil
 	case "esc":
+		if m.showHelp {
+			m.showHelp = false
+			return m, nil
+		}
+		if m.focus == "ports" {
+			m.focus = "list"
+			return m, nil
+		}
 		if m.query != "" {
 			m.query = ""
 			m.cursor = 0
@@ -297,16 +364,31 @@ func (m Model) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case "j", "down":
+		if m.focus == "ports" {
+			if len(running) > 0 && m.portCur < len(running)-1 {
+				m.portCur++
+			}
+			return m, nil
+		}
 		if len(items) > 0 && m.cursor < len(items)-1 {
 			m.cursor++
 			m.ensureVisible(m.listRows())
 		}
 	case "k", "up":
+		if m.focus == "ports" {
+			if m.portCur > 0 {
+				m.portCur--
+			}
+			return m, nil
+		}
 		if m.cursor > 0 {
 			m.cursor--
 			m.ensureVisible(m.listRows())
 		}
 	case "enter", "g":
+		if m.focus == "ports" {
+			return m, m.openRunningPort()
+		}
 		if len(items) == 0 {
 			return m, nil
 		}
@@ -322,12 +404,18 @@ func (m Model) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.reload()
 		m.status = "reloaded"
 	case "e":
+		if m.focus == "ports" {
+			return m, nil
+		}
 		if len(items) == 0 {
 			return m, nil
 		}
 		it := items[m.cursor]
 		return m, openProjectEditor(it.Path, it.Name)
 	case " ":
+		if m.focus == "ports" {
+			return m, nil
+		}
 		if len(items) == 0 {
 			return m, nil
 		}
@@ -340,6 +428,19 @@ func (m Model) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return doneMsg{status: fmt.Sprintf("started %s", name)}
 		}
 	case "x":
+		if m.focus == "ports" {
+			if len(running) == 0 {
+				return m, nil
+			}
+			name := running[m.portCur].Name
+			return m, func() tea.Msg {
+				err := m.mgr.Kill(name)
+				if err != nil {
+					return doneMsg{err: err}
+				}
+				return doneMsg{status: fmt.Sprintf("killed %s", name)}
+			}
+		}
 		if len(items) == 0 {
 			return m, nil
 		}
@@ -360,6 +461,9 @@ func (m Model) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return doneMsg{status: "killed all"}
 		}
 	case "o":
+		if m.focus == "ports" {
+			return m, m.openRunningPort()
+		}
 		if len(items) == 0 {
 			return m, nil
 		}
@@ -381,19 +485,75 @@ func (m Model) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-func (m Model) panelWidth() int {
+func (m Model) openRunningPort() tea.Cmd {
+	running := m.runningItems()
+	if len(running) == 0 {
+		return nil
+	}
+	it := running[m.portCur]
+	port := it.PrimaryPort()
+	if port <= 0 {
+		return func() tea.Msg {
+			return doneMsg{err: fmt.Errorf("%s has no port", it.Name)}
+		}
+	}
+	url := fmt.Sprintf("http://localhost:%d", port)
+	return func() tea.Msg {
+		if err := openURL(url); err != nil {
+			return doneMsg{err: err}
+		}
+		return doneMsg{status: fmt.Sprintf("opened %s", url)}
+	}
+}
+
+// layoutWidths returns outer panel content width and left/right column widths.
+// outer total includes padding inside border; left+1(divider)+right = content.
+func (m Model) layoutWidths() (outer, left, right int) {
 	w := m.width
 	if w <= 0 {
-		return 60
+		w = maxTotalWidth
 	}
-	inner := w - 4
-	if inner < 20 {
-		inner = w
+	outer = w - 4
+	if outer > maxTotalWidth {
+		outer = maxTotalWidth
 	}
-	if inner > maxPanelWidth {
-		return maxPanelWidth
+	if outer < 48 {
+		outer = w
+		if outer < 48 {
+			outer = 48
+		}
 	}
-	return inner
+	// content width inside border+padding (Width includes padding area in lipgloss)
+	content := outer - 4 // approx for internal calc; actual uses left/right
+	if content < 40 {
+		content = outer
+	}
+	right = content * 30 / 100
+	if right < minRightWidth {
+		right = minRightWidth
+	}
+	if right > maxRightWidth {
+		right = maxRightWidth
+	}
+	left = content - right - 1 // 1 for vertical divider
+	if left < minLeftWidth {
+		left = minLeftWidth
+		content = left + right + 1
+		outer = content + 4
+		if outer > maxTotalWidth {
+			outer = maxTotalWidth
+			content = outer - 4
+			right = content * 30 / 100
+			if right < minRightWidth {
+				right = minRightWidth
+			}
+			if right > maxRightWidth {
+				right = maxRightWidth
+			}
+			left = content - right - 1
+		}
+	}
+	return outer, left, right
 }
 
 // panelHeight is a fixed fraction of the terminal height.
@@ -412,8 +572,7 @@ func (m Model) panelHeight() int {
 	return ph
 }
 
-// chromeLines are non-list rows inside the panel content (always fixed).
-// header + top rule + bottom rule + status + help
+// chromeLines: title + col headers + top rule + bottom rule + status
 func (m Model) chromeLines() int {
 	return 5
 }
@@ -491,14 +650,12 @@ func (m Model) View() string {
 		return ""
 	}
 
-	pw := m.panelWidth()
+	outerW, leftW, rightW := m.layoutWidths()
 	ph := m.panelHeight()
-	contentW := pw - 4
-	if contentW < 10 {
-		contentW = 10
-	}
 	listRows := m.listRows()
 	items := m.filtered()
+	running := m.runningItems()
+	div := dimStyle.Render("│")
 
 	activeName := "none"
 	activeExtra := ""
@@ -520,89 +677,178 @@ func (m Model) View() string {
 		}
 	}
 
-	var body strings.Builder
+	// column headers
+	repoHead := "repositories"
+	portsHead := "ports"
+	if m.focus == "list" {
+		repoHead = cursorStyle.Render(repoHead)
+		portsHead = dimStyle.Render(portsHead)
+	} else {
+		repoHead = dimStyle.Render(repoHead)
+		portsHead = cursorStyle.Render(portsHead)
+	}
 
-	header := titleStyle.Render("devctl") + "  │  active: " +
-		statusStyle.Render(activeName) + dimStyle.Render(activeExtra)
-	body.WriteString(header)
-	body.WriteString("\n")
-	body.WriteString(dimStyle.Render(strings.Repeat("─", contentW)))
-	body.WriteString("\n")
-
-	// fixed-height list viewport
+	// build left column lines (listRows body)
+	leftLines := make([]string, 0, listRows)
 	if len(m.allItems) == 0 {
-		empty := []string{
-			dimStyle.Render("(no projects — ghq repos, .devctl.toml,"),
-			dimStyle.Render(" or [[projects]] in config are listed)"),
-		}
-		for i := 0; i < listRows; i++ {
-			if i < len(empty) {
-				body.WriteString(empty[i])
-			}
-			body.WriteString("\n")
-		}
+		leftLines = append(leftLines,
+			dimStyle.Render("(no projects)"),
+			dimStyle.Render("(add config via e)"),
+		)
 	} else if len(items) == 0 {
-		for i := 0; i < listRows; i++ {
-			if i == 0 {
-				body.WriteString(dimStyle.Render(fmt.Sprintf("(no match for %q)", m.query)))
-			}
-			body.WriteString("\n")
-		}
+		leftLines = append(leftLines, dimStyle.Render(fmt.Sprintf("(no match for %q)", m.query)))
 	} else {
 		end := m.offset + listRows
 		if end > len(items) {
 			end = len(items)
 		}
-		shown := 0
 		for i := m.offset; i < end; i++ {
-			body.WriteString(m.renderItem(i, items[i]))
-			body.WriteString("\n")
-			shown++
-		}
-		for shown < listRows {
-			body.WriteString("\n")
-			shown++
+			leftLines = append(leftLines, m.renderItem(i, items[i]))
 		}
 	}
+	for len(leftLines) < listRows {
+		leftLines = append(leftLines, "")
+	}
 
-	body.WriteString(dimStyle.Render(strings.Repeat("─", contentW)))
+	// build right column lines
+	rightLines := m.portLines(rightW, listRows)
+
+	var body strings.Builder
+	// title row
+	body.WriteString(titleStyle.Render("devctl"))
+	body.WriteString("  │  active: ")
+	body.WriteString(statusStyle.Render(activeName))
+	body.WriteString(dimStyle.Render(activeExtra))
 	body.WriteString("\n")
 
-	// status / search line
+	// section headers with vertical divider
+	body.WriteString(padCell(repoHead, leftW))
+	body.WriteString(div)
+	body.WriteString(padCell(" "+portsHead+dimStyle.Render(fmt.Sprintf(" %d", len(running))), rightW))
+	body.WriteString("\n")
+
+	// separator under headers (with ┼)
+	body.WriteString(dimStyle.Render(strings.Repeat("─", leftW) + "┼" + strings.Repeat("─", rightW)))
+	body.WriteString("\n")
+
+	// body rows
+	for i := 0; i < listRows; i++ {
+		body.WriteString(padCell(leftLines[i], leftW))
+		body.WriteString(div)
+		body.WriteString(padCell(rightLines[i], rightW))
+		body.WriteString("\n")
+	}
+
+	// bottom rule
+	body.WriteString(dimStyle.Render(strings.Repeat("─", leftW) + "┴" + strings.Repeat("─", rightW)))
+	body.WriteString("\n")
+
+	// status / search only
 	if m.searching {
 		body.WriteString(searchStyle.Render("/" + m.query + "█"))
 		body.WriteString(dimStyle.Render(fmt.Sprintf("  %d/%d", len(items), len(m.allItems))))
 	} else if m.query != "" {
 		body.WriteString(searchStyle.Render("/" + m.query))
-		body.WriteString(dimStyle.Render(fmt.Sprintf("  %d/%d  esc clear", len(items), len(m.allItems))))
+		body.WriteString(dimStyle.Render(fmt.Sprintf("  %d/%d", len(items), len(m.allItems))))
 	} else if m.errMsg != "" {
 		body.WriteString(errStyle.Render("error: " + m.errMsg))
 	} else if m.status != "" {
 		body.WriteString(statusStyle.Render(m.status))
 	}
-	body.WriteString("\n")
 
-	var help string
-	if m.searching {
-		help = "type to filter  enter done  esc cancel input  ↑↓ move  ctrl+u clear"
-	} else {
-		help = "j/k move  / search  e edit  enter/g jump  ^g fzf  space start  o open  x kill  a kill-all  r reload  q quit"
-		if len(items) > listRows || m.query != "" {
-			help = fmt.Sprintf("%s  (%d/%d)", help, m.cursor+1, len(items))
-		}
+	panel := panelStyle.Width(outerW).Render(strings.TrimRight(body.String(), "\n"))
+	if m.showHelp {
+		help := panelStyle.Width(outerW).Render(helpText())
+		panel = lipgloss.JoinVertical(lipgloss.Left, panel, "", help)
 	}
-	body.WriteString(helpStyle.Render(help))
-
-	panel := panelStyle.Width(pw).Render(strings.TrimRight(body.String(), "\n"))
 
 	tw, th := m.width, m.height
 	if tw <= 0 {
-		tw = pw
+		tw = outerW
 	}
 	if th <= 0 {
 		th = ph
 	}
 	return lipgloss.Place(tw, th, lipgloss.Center, lipgloss.Center, panel)
+}
+
+func helpText() string {
+	return strings.Join([]string{
+		titleStyle.Render("keys") + dimStyle.Render("  ctrl+p close"),
+		dimStyle.Render("j/k") + " move   " + dimStyle.Render("tab/h/l") + " list/ports",
+		dimStyle.Render("/") + " search   " + dimStyle.Render("e") + " edit   " + dimStyle.Render("enter/g") + " jump",
+		dimStyle.Render("space") + " start   " + dimStyle.Render("o") + " open   " + dimStyle.Render("x") + " kill",
+		dimStyle.Render("a") + " kill-all   " + dimStyle.Render("r") + " reload   " + dimStyle.Render("q") + " quit",
+	}, "\n")
+}
+
+// padCell left-aligns s into width cells (ANSI-aware via lipgloss.Width).
+func padCell(s string, width int) string {
+	if width <= 0 {
+		return s
+	}
+	w := lipgloss.Width(s)
+	if w > width {
+		// crude truncate by runes then re-check
+		r := []rune(s)
+		for len(r) > 0 && lipgloss.Width(string(r)) > width-1 {
+			r = r[:len(r)-1]
+		}
+		s = string(r) + "…"
+		w = lipgloss.Width(s)
+	}
+	if w < width {
+		s += strings.Repeat(" ", width-w)
+	}
+	return s
+}
+
+func (m Model) portLines(width, rows int) []string {
+	running := m.runningItems()
+	lines := make([]string, 0, rows)
+	if len(running) == 0 {
+		lines = append(lines, dimStyle.Render(" (none)"))
+	} else {
+		start := 0
+		if m.portCur >= rows {
+			start = m.portCur - rows + 1
+		}
+		end := start + rows
+		if end > len(running) {
+			end = len(running)
+			start = end - rows
+			if start < 0 {
+				start = 0
+			}
+		}
+		for i := start; i < end; i++ {
+			it := running[i]
+			cur := " "
+			nameStyle := normalStyle
+			if m.focus == "ports" && i == m.portCur {
+				cur = cursorStyle.Render("❯")
+				nameStyle = cursorStyle
+			}
+			ports := ""
+			if len(it.Ports) > 0 {
+				parts := make([]string, len(it.Ports))
+				for j, p := range it.Ports {
+					parts[j] = fmt.Sprintf(":%d", p)
+				}
+				ports = strings.Join(parts, " ")
+			}
+			line := " " + cur + runningStyle.Render("● ") + nameStyle.Render(it.Name)
+			if ports != "" {
+				line += " " + dimStyle.Render(ports)
+			}
+			lines = append(lines, line)
+		}
+	}
+	for len(lines) < rows {
+		lines = append(lines, "")
+	}
+	_ = width
+	return lines
 }
 
 func openURL(url string) error {
