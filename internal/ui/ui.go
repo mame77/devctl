@@ -6,6 +6,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/mame77/devctl/internal/jump"
 	"github.com/mame77/devctl/internal/session"
 )
 
@@ -41,6 +42,8 @@ type Model struct {
 	width    int
 	height   int
 	quitting bool
+	jumpPath string // set when quitting to jump via tmux
+	wantFzf  bool   // quit then open fzf picker
 }
 
 func New(mgr *session.Manager) Model {
@@ -108,6 +111,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.cursor--
 				m.ensureVisible(m.listRows())
 			}
+		case "enter", "g":
+			if len(m.items) == 0 {
+				return m, nil
+			}
+			m.jumpPath = m.items[m.cursor].Path
+			m.quitting = true
+			return m, tea.Quit
+		case "ctrl+g":
+			// leave alt-screen first, then fzf (all ghq repos)
+			m.wantFzf = true
+			m.quitting = true
+			return m, tea.Quit
 		case "r":
 			_ = m.mgr.ReloadConfig()
 			m.reload()
@@ -337,7 +352,7 @@ func (m Model) View() string {
 	}
 	body.WriteString("\n")
 
-	help := "j/k move  space start/switch  x kill  a kill-all  r reload  q quit"
+	help := "j/k move  enter/g jump  ^g fzf  space start  x kill  a kill-all  r reload  q quit"
 	if len(m.items) > listRows {
 		help = fmt.Sprintf("%s  (%d/%d)", help, m.cursor+1, len(m.items))
 	}
@@ -358,6 +373,19 @@ func (m Model) View() string {
 
 func Run(mgr *session.Manager) error {
 	p := tea.NewProgram(New(mgr), tea.WithAltScreen())
-	_, err := p.Run()
-	return err
+	final, err := p.Run()
+	if err != nil {
+		return err
+	}
+	m, ok := final.(Model)
+	if !ok {
+		return nil
+	}
+	if m.wantFzf {
+		return jump.Interactive()
+	}
+	if m.jumpPath != "" {
+		return jump.To(m.jumpPath)
+	}
+	return nil
 }

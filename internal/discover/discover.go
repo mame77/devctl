@@ -51,7 +51,7 @@ func Discover(cfg config.Config) ([]Project, error) {
 	}
 
 	// prefer ghq list when available
-	ghqPaths, ghqOK := listGhqRepos()
+	ghqPaths, ghqOK := ListGhqRepos()
 	if ghqOK {
 		for _, root := range ghqPaths {
 			scanRepo(root, cfg, byPath, "ghq")
@@ -59,7 +59,7 @@ func Discover(cfg config.Config) ([]Project, error) {
 	} else {
 		roots := cfg.ScanRoots
 		if len(roots) == 0 {
-			if r, err := ghqRoot(); err == nil {
+			if r, err := GhqRoot(); err == nil {
 				roots = []string{r}
 			}
 		}
@@ -126,7 +126,8 @@ func uniqueName(path string) string {
 	return filepath.Base(path)
 }
 
-func listGhqRepos() ([]string, bool) {
+// ListGhqRepos returns absolute paths from `ghq list --full-path`.
+func ListGhqRepos() ([]string, bool) {
 	cmd := exec.Command("ghq", "list", "--full-path")
 	var stdout bytes.Buffer
 	cmd.Stdout = &stdout
@@ -147,7 +148,8 @@ func listGhqRepos() ([]string, bool) {
 	return paths, len(paths) > 0
 }
 
-func ghqRoot() (string, error) {
+// GhqRoot returns the first root from `ghq root`.
+func GhqRoot() (string, error) {
 	cmd := exec.Command("ghq", "root")
 	var stdout bytes.Buffer
 	cmd.Stdout = &stdout

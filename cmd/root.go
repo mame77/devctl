@@ -7,6 +7,7 @@ import (
 	"text/tabwriter"
 
 	"github.com/mame77/devctl/internal/config"
+	"github.com/mame77/devctl/internal/jump"
 	"github.com/mame77/devctl/internal/session"
 	"github.com/mame77/devctl/internal/ui"
 	"github.com/spf13/cobra"
@@ -138,6 +139,27 @@ var initCmd = &cobra.Command{
 	},
 }
 
+var jumpCmd = &cobra.Command{
+	Use:   "jump [path]",
+	Short: "fzf-select a ghq repo and open/switch tmux session (Ctrl+G replacement)",
+	Long: `Pick a repository with fzf (ghq list + git-managed ~/.config/*) and
+create or switch to a tmux session named after the directory basename.
+
+With no args: interactive fzf picker.
+With a path: jump directly without fzf.
+
+Shell binding example (bash):
+  bind -x '"\C-g": devctl jump'
+`,
+	Args: cobra.MaximumNArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		if len(args) == 1 {
+			return jump.To(args[0])
+		}
+		return jump.Interactive()
+	},
+}
+
 func runTUI() error {
 	mgr, err := session.New()
 	if err != nil {
@@ -148,7 +170,7 @@ func runTUI() error {
 
 func Execute() {
 	killCmd.Flags().BoolVar(&killAll, "all", false, "kill all running projects")
-	rootCmd.AddCommand(tuiCmd, statusCmd, startCmd, killCmd, initCmd)
+	rootCmd.AddCommand(tuiCmd, statusCmd, startCmd, killCmd, initCmd, jumpCmd)
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)

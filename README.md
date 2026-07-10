@@ -15,9 +15,19 @@ go install .
 
 ```bash
 devctl              # TUI
+devctl jump         # fzf で ghq リポジトリを選び tmux セッションへ (Ctrl+G 相当)
+devctl jump <path>  # 指定 path へ直接 jump
 devctl status       # 起動中を表示
 devctl kill --all   # 全停止
 devctl init         # カレントに .devctl.toml を生成
+```
+
+### Shell binding (Ctrl+G)
+
+`~/.bashrc` の `projects-fzf` の代わりに:
+
+```bash
+bind -x '"\C-g": devctl jump'
 ```
 
 ### Keys (TUI)
@@ -25,6 +35,8 @@ devctl init         # カレントに .devctl.toml を生成
 | Key | Action |
 |-----|--------|
 | `j` / `k` | move |
+| `Enter` / `g` | jump to selected project (tmux) |
+| `Ctrl+G` | fzf pick any ghq repo → jump |
 | `Space` | start / switch (kills others) |
 | `x` | kill selected |
 | `a` | kill all |
