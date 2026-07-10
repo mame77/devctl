@@ -66,18 +66,21 @@ bind d run-shell 'tmux display-popup -d "#{pane_current_path}" -E -w 100% -h 100
 
 Each list item is a **repo root** only (no monorepo subdirs).
 
-**Command is manual.** Space start works only when you set `command` in:
+**Command is manual.** Space start works only when you set `command`.
 
-- global `[[projects]]`, or
-- repo `.devctl.toml`
+Per-repo config (priority high → low):
 
-Otherwise shown as jump-only (`○ jump`).
+1. `<repo>/.devctl.toml`
+2. `~/.config/devctl/projects/<ghq-relative>.toml`  
+   例: `~/.config/devctl/projects/github.com/mame77/devctl.toml`
+3. global `[[projects]]` in `config.toml`
+
+`e` は常に **2**（`~/.config/devctl/projects/...`）を開く／無ければそこに作成（repo には書かない）。  
+実行時の読み込みは **1 が優先**。
 
 ### Global `~/.config/devctl/config.toml`
 
 ```toml
-# optional default only applied when [[projects]] omits command
-# default_command = "npm run dev"
 scan_roots = ["~/ghq"]
 scan_depth = 6
 
@@ -88,11 +91,19 @@ command = "npm run dev"
 port = 3000
 ```
 
-### Project `.devctl.toml`
+### Per-repo (XDG)
 
 ```toml
+# ~/.config/devctl/projects/github.com/digeon-inc/jal-eap.toml
 name = "jal-eap"
 command = "npm run dev --prefix app"
 port = 3000
 ```
-State/logs: `~/.local/state/devctl/`
+
+### Per-repo (in repository, highest priority)
+
+```toml
+# <repo>/.devctl.toml
+name = "jal-eap"
+command = "npm run dev --prefix app"
+```State/logs: `~/.local/state/devctl/`

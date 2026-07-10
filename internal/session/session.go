@@ -17,6 +17,7 @@ type Item struct {
 	Command  string
 	Port     int
 	Running  bool
+	Done     bool // finished recently; shows "Done" briefly
 	PID      int
 	PGID     int
 	Source   string
@@ -53,10 +54,26 @@ func (m *Manager) List() ([]Item, error) {
 	if err != nil {
 		return nil, err
 	}
-	runningByName := map[string]state.Entry{}
+
+	statusByName := map[string]state.Entry{}
 	for _, e := range entries {
 		if process.Alive(e.PID) {
-			runningByName[e.Name] = e
+			// still running — clear any stale finished marker
+			if e.FinishedAt != nil {
+				e.FinishedAt = nil
+				_ = state.Save(e)
+			}
+			statusByName[e.Name] = e
+			continue
+		}
+		// process ended
+		now := time.Now()
+		if e.FinishedAt == nil {
+			e.FinishedAt = &now
+			_ = state.Save(e)
+		}
+		if now.Sub(*e.FinishedAt) < state.DoneTTL {
+			statusByName[e.Name] = e
 		} else {
 			_ = state.Remove(e.Name)
 		}
@@ -72,12 +89,16 @@ func (m *Manager) List() ([]Item, error) {
 			Source:   p.Source,
 			Runnable: p.Runnable,
 		}
-		if e, ok := runningByName[p.Name]; ok {
-			it.Running = true
+		if e, ok := statusByName[p.Name]; ok {
 			it.PID = e.PID
 			it.PGID = e.PGID
 			if it.Port == 0 {
 				it.Port = e.Port
+			}
+			if process.Alive(e.PID) {
+				it.Running = true
+			} else {
+				it.Done = true
 			}
 		}
 		items = append(items, it)
@@ -95,7 +116,6 @@ func (m *Manager) Active() (*Item, error) {
 			return &items[i], nil
 		}
 	}
-	// also surface orphan running states not in list
 	entries, _ := state.List()
 	for _, e := range entries {
 		if process.Alive(e.PID) {
@@ -164,13 +184,13 @@ func (m *Manager) StartSwitch(name string) error {
 		return fmt.Errorf("project not found: %s", name)
 	}
 	if !target.Runnable || target.Command == "" {
-		return fmt.Errorf("%s has no start command (jump-only; press enter to open in tmux)", name)
+		return fmt.Errorf("%s has no command (set command in .devctl.toml or config)", name)
 	}
 	if target.Running {
 		return nil // already active
 	}
 
-	// kill all others (and any orphans)
+	// kill all others (and any orphans / done markers)
 	if err := m.KillAll(); err != nil {
 		return fmt.Errorf("kill existing: %w", err)
 	}

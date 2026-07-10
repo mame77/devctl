@@ -10,15 +10,19 @@ import (
 )
 
 type Entry struct {
-	Name      string    `json:"name"`
-	PID       int       `json:"pid"`
-	PGID      int       `json:"pgid"`
-	Port      int       `json:"port"`
-	Cwd       string    `json:"cwd"`
-	Command   string    `json:"command"`
-	StartedAt time.Time `json:"started_at"`
-	LogPath   string    `json:"log_path"`
+	Name       string     `json:"name"`
+	PID        int        `json:"pid"`
+	PGID       int        `json:"pgid"`
+	Port       int        `json:"port"`
+	Cwd        string     `json:"cwd"`
+	Command    string     `json:"command"`
+	StartedAt  time.Time  `json:"started_at"`
+	FinishedAt *time.Time `json:"finished_at,omitempty"`
+	LogPath    string     `json:"log_path"`
 }
+
+// DoneTTL is how long a finished process stays visible as "Done".
+const DoneTTL = 3 * time.Second
 
 func Dir() (string, error) {
 	return config.StateDir()

@@ -114,24 +114,36 @@ var killCmd = &cobra.Command{
 	},
 }
 
+var initLocal bool
+
 var initCmd = &cobra.Command{
 	Use:   "init",
-	Short: "Write .devctl.toml in the current directory",
+	Short: "Create per-repo config (default: ~/.config/devctl/projects/...)",
+	Long: `Create a project config stub.
+
+Default: ~/.config/devctl/projects/<ghq-relative>.toml
+With --local: <cwd>/.devctl.toml
+`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		cwd, err := os.Getwd()
 		if err != nil {
 			return err
 		}
-		path := filepath.Join(cwd, ".devctl.toml")
-		if _, err := os.Stat(path); err == nil {
-			return fmt.Errorf("%s already exists", path)
+		if initLocal {
+			path := config.RepoLocalPath(cwd)
+			if _, err := os.Stat(path); err == nil {
+				return fmt.Errorf("%s already exists", path)
+			}
+			if err := config.WriteProjectFile(cwd, config.ProjectFile{
+				Name: filepath.Base(cwd),
+			}); err != nil {
+				return err
+			}
+			fmt.Printf("wrote %s\n", path)
+			return nil
 		}
-		pf := config.ProjectFile{
-			Name:    filepath.Base(cwd),
-			Command: "npm run dev",
-			Port:    3000,
-		}
-		if err := config.WriteProjectFile(cwd, pf); err != nil {
+		path, err := config.EnsureProjectFile(cwd, filepath.Base(cwd))
+		if err != nil {
 			return err
 		}
 		fmt.Printf("wrote %s\n", path)
@@ -178,6 +190,7 @@ func runTUI() error {
 
 func Execute() {
 	killCmd.Flags().BoolVar(&killAll, "all", false, "kill all running projects")
+	initCmd.Flags().BoolVar(&initLocal, "local", false, "write .devctl.toml in the current directory")
 	jumpCmd.Flags().BoolVar(&applyPending, "apply-pending", false, "switch to session recorded by popup jump")
 	rootCmd.AddCommand(tuiCmd, statusCmd, startCmd, killCmd, initCmd, jumpCmd)
 	if err := rootCmd.Execute(); err != nil {

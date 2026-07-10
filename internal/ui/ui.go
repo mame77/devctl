@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"time"
 	"unicode"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -116,7 +117,15 @@ func (m *Model) clampCursor() {
 }
 
 func (m Model) Init() tea.Cmd {
-	return nil
+	return tickCmd()
+}
+
+type tickMsg struct{}
+
+func tickCmd() tea.Cmd {
+	return tea.Tick(500*time.Millisecond, func(time.Time) tea.Msg {
+		return tickMsg{}
+	})
 }
 
 type doneMsg struct {
@@ -136,6 +145,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.height = msg.Height
 		m.ensureVisible(m.listRows())
 		return m, nil
+
+	case tickMsg:
+		m.reload()
+		return m, tickCmd()
 
 	case doneMsg:
 		if msg.err != nil {
@@ -400,16 +413,21 @@ func (m Model) renderItem(i int, it session.Item) string {
 	extra := ""
 	if it.Running {
 		mark = runningStyle.Render("●")
+		label := "  running"
+		if it.Port > 0 {
+			label += fmt.Sprintf("  :%d", it.Port)
+		}
 		if i == m.cursor {
-			extra = cursorStyle.Render("  running")
-			if it.Port > 0 {
-				extra += cursorStyle.Render(fmt.Sprintf("  :%d", it.Port))
-			}
+			extra = cursorStyle.Render(label)
 		} else {
-			extra = runningStyle.Render("  running")
-			if it.Port > 0 {
-				extra += runningStyle.Render(fmt.Sprintf("  :%d", it.Port))
-			}
+			extra = runningStyle.Render(label)
+		}
+	} else if it.Done {
+		mark = statusStyle.Render("✓")
+		if i == m.cursor {
+			extra = cursorStyle.Render("  Done")
+		} else {
+			extra = statusStyle.Render("  Done")
 		}
 	} else if it.Port > 0 {
 		if i == m.cursor {
@@ -446,6 +464,10 @@ func (m Model) View() string {
 				activeExtra += fmt.Sprintf("  port %d", it.Port)
 			}
 			break
+		}
+		if it.Done && activeName == "none" {
+			activeName = it.Name
+			activeExtra = " Done"
 		}
 	}
 

@@ -47,10 +47,7 @@ func Start(command, cwd, logPath string) (pid, pgid int, err error) {
 		logFile.Close()
 	}()
 
-	time.Sleep(100 * time.Millisecond)
-	if !Alive(pid) {
-		return pid, pgid, fmt.Errorf("process exited immediately (see %s)", logPath)
-	}
+	// allow one-shot commands (go install, etc.); caller tracks alive/done
 	return pid, pgid, nil
 }
 
