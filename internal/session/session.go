@@ -197,16 +197,20 @@ func (m *Manager) StartSwitch(name string) error {
 		return nil // already active
 	}
 
-	// kill all others (and any orphans / done markers)
-	if err := m.KillAll(); err != nil {
-		return fmt.Errorf("kill existing: %w", err)
-	}
-
-	for _, port := range target.Ports {
-		inUse, _ := process.PortInUse(port)
-		if inUse {
-			return fmt.Errorf("port %d already in use (not managed by devctl)", port)
+	// port-based projects own the exclusive "dev server" slot
+	if len(target.Ports) > 0 {
+		if err := m.KillAll(); err != nil {
+			return fmt.Errorf("kill existing: %w", err)
 		}
+		for _, port := range target.Ports {
+			inUse, _ := process.PortInUse(port)
+			if inUse {
+				return fmt.Errorf("port %d already in use (not managed by devctl)", port)
+			}
+		}
+	} else {
+		// one-shot / no-port (e.g. go install): do not kill running servers
+		_ = state.Remove(target.Name)
 	}
 
 	logPath, err := state.LogPath(target.Name)

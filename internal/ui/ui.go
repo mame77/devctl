@@ -421,7 +421,11 @@ func (m *Model) ensureVisible(listRows int) {
 
 func (m Model) renderItem(i int, it session.Item) string {
 	cursor := "  "
+	// white if command exists, gray if not; cursor still yellow when selected
 	nameStyle := normalStyle
+	if !it.Runnable {
+		nameStyle = dimStyle
+	}
 	if i == m.cursor {
 		cursor = cursorStyle.Render("❯ ")
 		nameStyle = cursorStyle
@@ -432,18 +436,10 @@ func (m Model) renderItem(i int, it session.Item) string {
 	extra := ""
 	if it.Running {
 		mark = runningStyle.Render("●")
-		if i == m.cursor {
-			extra = cursorStyle.Render("  running")
-		} else {
-			extra = runningStyle.Render("  running")
-		}
+		extra = runningStyle.Render("  running")
 	} else if it.Done {
 		mark = statusStyle.Render("✓")
-		if i == m.cursor {
-			extra = cursorStyle.Render("  Done")
-		} else {
-			extra = statusStyle.Render("  Done")
-		}
+		extra = statusStyle.Render("  Done")
 	}
 
 	return fmt.Sprintf("%s%s %s%s", cursor, mark, name, extra)
