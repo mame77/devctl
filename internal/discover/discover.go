@@ -13,11 +13,12 @@ import (
 )
 
 type Project struct {
-	Name    string
-	Path    string
-	Command string
-	Port    int
-	Source  string // "config" | "scan" | "ghq"
+	Name     string
+	Path     string
+	Command  string
+	Port     int
+	Source   string // "config" | "scan" | "ghq"
+	Runnable bool   // has a startable dev command
 }
 
 type packageJSON struct {
@@ -42,11 +43,12 @@ func Discover(cfg config.Config) ([]Project, error) {
 			cmd = cfg.DefaultCommand
 		}
 		byPath[path] = Project{
-			Name:    name,
-			Path:    path,
-			Command: cmd,
-			Port:    p.Port,
-			Source:  "config",
+			Name:     name,
+			Path:     path,
+			Command:  cmd,
+			Port:     p.Port,
+			Source:   "config",
+			Runnable: cmd != "",
 		}
 	}
 
@@ -167,19 +169,25 @@ func GhqRoot() (string, error) {
 	return root, nil
 }
 
-// scanRepo looks for dev projects inside a single git repository.
+// scanRepo looks for projects inside a single git repository.
+// Always registers the repo root (for jump). Runnable if .devctl.toml or package.json "dev".
 func scanRepo(root string, cfg config.Config, byPath map[string]Project, source string) {
 	root, err := filepath.Abs(root)
 	if err != nil {
 		return
 	}
+	base := filepath.Base(root)
+
 	// project-local config always wins for this tree
 	if tryAddDevctl(root, cfg, byPath, source) {
 		return
 	}
-	if tryAddPackageJSON(root, cfg, byPath, source, filepath.Base(root)) {
+	if tryAddPackageJSON(root, cfg, byPath, source, base) {
 		return
 	}
+	// jump target even without a dev command (e.g. nix-config)
+	addJumpOnly(root, source, base, byPath)
+
 	// monorepo: scan immediate subdirs (and one more level for apps/* style)
 	entries, err := os.ReadDir(root)
 	if err != nil {
@@ -197,7 +205,7 @@ func scanRepo(root string, cfg config.Config, byPath map[string]Project, source 
 		if tryAddDevctl(sub, cfg, byPath, source) {
 			continue
 		}
-		label := filepath.Base(root) + "/" + name
+		label := base + "/" + name
 		if tryAddPackageJSON(sub, cfg, byPath, source, label) {
 			continue
 		}
@@ -214,9 +222,30 @@ func scanRepo(root string, cfg config.Config, byPath map[string]Project, source 
 			if tryAddDevctl(sub2, cfg, byPath, source) {
 				continue
 			}
-			label2 := filepath.Base(root) + "/" + name + "/" + e2.Name()
+			label2 := base + "/" + name + "/" + e2.Name()
 			_ = tryAddPackageJSON(sub2, cfg, byPath, source, label2)
 		}
+	}
+}
+
+func addJumpOnly(dir, source, name string, byPath map[string]Project) {
+	abs, err := filepath.Abs(dir)
+	if err != nil {
+		abs = dir
+	}
+	if _, exists := byPath[abs]; exists {
+		return
+	}
+	if name == "" {
+		name = filepath.Base(abs)
+	}
+	byPath[abs] = Project{
+		Name:     name,
+		Path:     abs,
+		Command:  "",
+		Port:     0,
+		Source:   source,
+		Runnable: false,
 	}
 }
 
@@ -247,11 +276,12 @@ func tryAddDevctl(dir string, cfg config.Config, byPath map[string]Project, sour
 		}
 	}
 	byPath[abs] = Project{
-		Name:    name,
-		Path:    abs,
-		Command: cmd,
-		Port:    port,
-		Source:  source,
+		Name:     name,
+		Path:     abs,
+		Command:  cmd,
+		Port:     port,
+		Source:   source,
+		Runnable: true,
 	}
 	return true
 }
@@ -273,7 +303,7 @@ func tryAddPackageJSON(dir string, cfg config.Config, byPath map[string]Project,
 		return false
 	}
 	abs, _ := filepath.Abs(dir)
-	if _, exists := byPath[abs]; exists {
+	if existing, exists := byPath[abs]; exists && existing.Runnable {
 		return true
 	}
 	if name == "" {
@@ -281,11 +311,12 @@ func tryAddPackageJSON(dir string, cfg config.Config, byPath map[string]Project,
 	}
 	cmd := inferDevCommand(dir, cfg.DefaultCommand)
 	byPath[abs] = Project{
-		Name:    name,
-		Path:    abs,
-		Command: cmd,
-		Port:    0,
-		Source:  source,
+		Name:     name,
+		Path:     abs,
+		Command:  cmd,
+		Port:     0,
+		Source:   source,
+		Runnable: true,
 	}
 	return true
 }

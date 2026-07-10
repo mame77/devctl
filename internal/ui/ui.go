@@ -258,6 +258,10 @@ func (m Model) renderItem(i int, it session.Item) string {
 		if it.Port > 0 {
 			extra += runningStyle.Render(fmt.Sprintf("  :%d", it.Port))
 		}
+	} else if !it.Runnable {
+		mark = dimStyle.Render("○")
+		name = dimStyle.Render(it.Name)
+		extra = dimStyle.Render("  jump")
 	} else {
 		name = lineStyle.Render(it.Name)
 		if it.Port > 0 {

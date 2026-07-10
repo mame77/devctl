@@ -12,14 +12,15 @@ import (
 )
 
 type Item struct {
-	Name    string
-	Path    string
-	Command string
-	Port    int
-	Running bool
-	PID     int
-	PGID    int
-	Source  string
+	Name     string
+	Path     string
+	Command  string
+	Port     int
+	Running  bool
+	PID      int
+	PGID     int
+	Source   string
+	Runnable bool
 }
 
 type Manager struct {
@@ -64,11 +65,12 @@ func (m *Manager) List() ([]Item, error) {
 	items := make([]Item, 0, len(projects))
 	for _, p := range projects {
 		it := Item{
-			Name:    p.Name,
-			Path:    p.Path,
-			Command: p.Command,
-			Port:    p.Port,
-			Source:  p.Source,
+			Name:     p.Name,
+			Path:     p.Path,
+			Command:  p.Command,
+			Port:     p.Port,
+			Source:   p.Source,
+			Runnable: p.Runnable,
 		}
 		if e, ok := runningByName[p.Name]; ok {
 			it.Running = true
@@ -160,6 +162,9 @@ func (m *Manager) StartSwitch(name string) error {
 	}
 	if target == nil {
 		return fmt.Errorf("project not found: %s", name)
+	}
+	if !target.Runnable || target.Command == "" {
+		return fmt.Errorf("%s has no start command (jump-only; press enter to open in tmux)", name)
 	}
 	if target.Running {
 		return nil // already active

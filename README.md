@@ -30,6 +30,16 @@ devctl init         # カレントに .devctl.toml を生成
 bind -x '"\C-g": devctl jump'
 ```
 
+### tmux popup (`prefix+d`)
+
+popup 内で Enter jump すると、popup 終了時に元セッションへ戻る。  
+次のように **popup 後に pending を適用**する:
+
+```tmux
+bind d run-shell 'tmux display-popup -d "#{pane_current_path}" -E -w 100% -h 100% "env DEVCTL_POPUP=1 $HOME/go/bin/devctl"; $HOME/go/bin/devctl jump --apply-pending'
+```
+
+`nix-config` の `dotfiles/tmux/tmux.conf` には既に反映済み。`home-manager switch` 後に有効。
 ### Keys (TUI)
 
 | Key | Action |

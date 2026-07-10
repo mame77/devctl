@@ -150,15 +150,23 @@ With a path: jump directly without fzf.
 
 Shell binding example (bash):
   bind -x '"\C-g": devctl jump'
+
+tmux popup (prefix+d) must apply pending after close:
+  bind d run-shell 'tmux display-popup -E -w 100% -h 100% "devctl"; devctl jump --apply-pending'
 `,
 	Args: cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
+		if applyPending {
+			return jump.ApplyPending()
+		}
 		if len(args) == 1 {
 			return jump.To(args[0])
 		}
 		return jump.Interactive()
 	},
 }
+
+var applyPending bool
 
 func runTUI() error {
 	mgr, err := session.New()
@@ -170,6 +178,7 @@ func runTUI() error {
 
 func Execute() {
 	killCmd.Flags().BoolVar(&killAll, "all", false, "kill all running projects")
+	jumpCmd.Flags().BoolVar(&applyPending, "apply-pending", false, "switch to session recorded by popup jump")
 	rootCmd.AddCommand(tuiCmd, statusCmd, startCmd, killCmd, initCmd, jumpCmd)
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
