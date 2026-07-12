@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 
@@ -43,27 +44,26 @@ func Discover(cfg config.Config) ([]Project, error) {
 		}
 	}
 
-	// one entry per repository root
-	ghqPaths, ghqOK := ListGhqRepos()
-	if ghqOK {
-		for _, root := range ghqPaths {
-			addRepoRoot(root, byPath, "ghq")
+	// one entry per repository root — walk scan_roots (no ghq dependency)
+	roots := cfg.ScanRoots
+	if len(roots) == 0 {
+		roots = config.DefaultScanRoots()
+	}
+	for _, root := range roots {
+		if root == "" {
+			continue
 		}
-	} else {
-		roots := cfg.ScanRoots
-		if len(roots) == 0 {
-			if r, err := GhqRoot(); err == nil {
-				roots = []string{r}
-			}
+		root = config.ExpandPath(root)
+		if _, err := os.Stat(root); err != nil {
+			continue
 		}
-		for _, root := range roots {
-			if root == "" {
-				continue
-			}
-			if _, err := os.Stat(root); err != nil {
-				continue
-			}
-			_ = walkGitRepos(root, cfg.ScanDepth, byPath)
+		_ = walkGitRepos(root, cfg.ScanDepth, byPath)
+	}
+
+	// apply temporary ignore (explicit config projects are kept)
+	for path, p := range byPath {
+		if p.Source != "config" && isIgnored(path, cfg.Ignore) {
+			delete(byPath, path)
 		}
 	}
 
@@ -193,16 +193,36 @@ func addRepoRoot(root string, byPath map[string]Project, source string) {
 	}
 }
 
-func skipDir(name string) bool {
+func skipDir(root, path, name string) bool {
 	switch name {
 	case "node_modules", ".git", "vendor", "dist", "build", ".next", "target",
 		"coverage", ".turbo", ".cache", "tmp", "temp", ".idea", ".vscode":
 		return true
 	}
+	if isHomeRoot(root) {
+		switch runtime.GOOS {
+		case "darwin":
+			switch name {
+			case "Library", "Applications", "Desktop", "Documents", "Downloads",
+				"Movies", "Music", "Pictures", "Public":
+				return true
+			}
+		case "linux":
+			switch name {
+			case ".cache", ".local", ".var", "snap":
+				return true
+			}
+		case "windows":
+			switch name {
+			case "AppData", "Application Data", "Local Settings", "OneDrive":
+				return true
+			}
+		}
+	}
 	return strings.HasPrefix(name, ".")
 }
 
-// walkGitRepos finds git repository roots under root (ghq fallback).
+// walkGitRepos finds git repository roots under root by looking for .git.
 func walkGitRepos(root string, maxDepth int, byPath map[string]Project) error {
 	root = filepath.Clean(root)
 	return filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
@@ -223,7 +243,7 @@ func walkGitRepos(root string, maxDepth int, byPath map[string]Project) error {
 		if depth > maxDepth {
 			return filepath.SkipDir
 		}
-		if skipDir(d.Name()) && path != root {
+		if skipDir(root, path, d.Name()) && path != root {
 			return filepath.SkipDir
 		}
 		if st, err := os.Stat(filepath.Join(path, ".git")); err == nil && (st.IsDir() || st.Mode().IsRegular()) {
@@ -232,4 +252,71 @@ func walkGitRepos(root string, maxDepth int, byPath map[string]Project) error {
 		}
 		return nil
 	})
+}
+
+func isHomeRoot(root string) bool {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return false
+	}
+	return filepath.Clean(root) == filepath.Clean(home)
+}
+
+// isIgnored reports whether absPath matches any ignore entry.
+// Entries may be absolute paths or ghq/home-relative paths (e.g.
+// "github.com/digeon-inc"). Relative entries are matched against the
+// repo's path relative to a known git root or the home directory.
+func isIgnored(abs string, ignores []string) bool {
+	key := ignoreKey(abs)
+	absClean := filepath.ToSlash(filepath.Clean(abs))
+	for _, ig := range ignores {
+		ig = strings.TrimSpace(ig)
+		if ig == "" {
+			continue
+		}
+		igClean := filepath.ToSlash(filepath.Clean(config.ExpandPath(ig)))
+		if filepath.IsAbs(igClean) {
+			if absClean == igClean || strings.HasPrefix(absClean, igClean+"/") {
+				return true
+			}
+			continue
+		}
+		if key == igClean || strings.HasPrefix(key, igClean+"/") {
+			return true
+		}
+	}
+	return false
+}
+
+// ignoreKey returns a repo path relative to a known git root, then home.
+func ignoreKey(abs string) string {
+	abs = filepath.Clean(abs)
+	for _, r := range ignoreRoots() {
+		r = filepath.Clean(config.ExpandPath(r))
+		if r == "" {
+			continue
+		}
+		if rel, err := filepath.Rel(r, abs); err == nil && rel != "." && !strings.HasPrefix(rel, "..") {
+			return filepath.ToSlash(rel)
+		}
+	}
+	if home, err := os.UserHomeDir(); err == nil {
+		if rel, err := filepath.Rel(home, abs); err == nil && !strings.HasPrefix(rel, "..") {
+			return filepath.ToSlash(rel)
+		}
+	}
+	return filepath.ToSlash(abs)
+}
+
+func ignoreRoots() []string {
+	var roots []string
+	if r := os.Getenv("GHQ_ROOT"); r != "" {
+		for _, p := range strings.Split(r, string(os.PathListSeparator)) {
+			if p != "" {
+				roots = append(roots, p)
+			}
+		}
+	}
+	roots = append(roots, "~/ghq", "~/src", "~/Projects")
+	return roots
 }

@@ -1,8 +1,8 @@
 # devctl
 
-複数リポジトリの dev サーバーを TUI で切替・停止する CLI。
+複数リポジトリを移動しサーバーを起動 停止する TUI。
 
-同時に起動できる dev は **常に1つ**。別プロジェクトを起動すると既存は自動で kill される。
+リポジトリで設定したコマンドを簡単に実行
 
 ## Install
 
@@ -64,10 +64,18 @@ bind d run-shell 'tmux display-popup -d "#{pane_current_path}" -E -w 100% -h 100
 ## Project discovery
 
 1. Explicit `[[projects]]` in config (highest priority)
-2. `ghq list --full-path` — **one entry per repository root**
-3. Otherwise walk `scan_roots` for `.git` roots
+2. Walk `scan_roots` for `.git` roots (no `ghq` dependency)
 
 Each list item is a **repo root** only (no monorepo subdirs).
+
+`scan_roots` defaults to existing developer folders such as `~/ghq`, `~/src`,
+`~/dev`, `~/projects`, `~/code`, `~/work`, and `~/repos`. Hidden directories
+and `node_modules`/`vendor`/`dist`/… are skipped. If you explicitly set
+`scan_roots = ["~"]`, devctl also skips OS-specific heavy directories such as
+`~/Library` on macOS as a safety guard.
+
+Discovered repositories are cached under `~/.local/state/devctl/cache/` so the
+TUI can start from the previous result and refresh in the background.
 
 **Command is manual.** Space start works only when you set `command`.
 
@@ -84,8 +92,12 @@ Per-repo config (priority high → low):
 ### Global `~/.config/devctl/config.toml`
 
 ```toml
-scan_roots = ["~/ghq"]
-scan_depth = 6
+scan_roots = ["~/ghq", "~/src"]  # optional; defaults to existing dev folders
+scan_depth = 4
+
+# Temporarily hide repositories (ghq-relative or absolute paths).
+# Comment out to show them again.
+ignore = ["github.com/digeon-inc"]
 
 [[projects]]
 name = "goal-share"

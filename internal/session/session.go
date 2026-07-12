@@ -3,6 +3,7 @@ package session
 import (
 	"fmt"
 	"os"
+	"sync"
 	"time"
 
 	"github.com/mame77/devctl/internal/config"
@@ -33,7 +34,9 @@ func (it Item) PrimaryPort() int {
 }
 
 type Manager struct {
-	cfg config.Config
+	mu       sync.RWMutex
+	cfg      config.Config
+	projects []discover.Project
 }
 
 func New() (*Manager, error) {
@@ -41,7 +44,16 @@ func New() (*Manager, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Manager{cfg: cfg}, nil
+	mgr := &Manager{cfg: cfg}
+	if projects, err := state.LoadDiscoveredProjects(); err == nil {
+		mgr.projects = projects
+		go mgr.refreshProjects(cfg)
+		return mgr, nil
+	}
+	if err := mgr.refreshProjects(cfg); err != nil {
+		return nil, err
+	}
+	return mgr, nil
 }
 
 func (m *Manager) ReloadConfig() error {
@@ -49,15 +61,16 @@ func (m *Manager) ReloadConfig() error {
 	if err != nil {
 		return err
 	}
+	m.mu.Lock()
 	m.cfg = cfg
-	return nil
+	m.mu.Unlock()
+	return m.refreshProjects(cfg)
 }
 
 func (m *Manager) List() ([]Item, error) {
-	projects, err := discover.Discover(m.cfg)
-	if err != nil {
-		return nil, err
-	}
+	m.mu.RLock()
+	projects := append([]discover.Project(nil), m.projects...)
+	m.mu.RUnlock()
 	entries, err := state.List()
 	if err != nil {
 		return nil, err
@@ -264,4 +277,16 @@ func (m *Manager) StartSwitch(name string) error {
 		StartedAt: time.Now(),
 		LogPath:   logPath,
 	})
+}
+
+func (m *Manager) refreshProjects(cfg config.Config) error {
+	projects, err := discover.Discover(cfg)
+	if err != nil {
+		return err
+	}
+	m.mu.Lock()
+	m.projects = projects
+	m.mu.Unlock()
+	_ = state.SaveDiscoveredProjects(projects)
+	return nil
 }

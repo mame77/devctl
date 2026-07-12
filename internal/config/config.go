@@ -3,7 +3,9 @@ package config
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	"github.com/BurntSushi/toml"
@@ -23,6 +25,7 @@ type Config struct {
 	ScanRoots      []string  `toml:"scan_roots"`
 	ScanDepth      int       `toml:"scan_depth"`
 	ScanMarkers    []string  `toml:"scan_markers"`
+	Ignore         []string  `toml:"ignore"`
 	Projects       []Project `toml:"projects"`
 }
 
@@ -63,11 +66,35 @@ func (p ProjectFile) AllPorts() []int {
 func Default() Config {
 	return Config{
 		DefaultCommand: "",
-		ScanRoots:      []string{"~/ghq"},
-		ScanDepth:      6,
+		ScanRoots:      DefaultScanRoots(),
+		ScanDepth:      4,
 		ScanMarkers:    []string{".devctl.toml"},
 		Projects:       nil,
 	}
+}
+
+func DefaultScanRoots() []string {
+	candidates := []string{"~/ghq", "~/src", "~/dev", "~/projects", "~/Projects", "~/code", "~/work", "~/repos"}
+	if runtime.GOOS == "windows" {
+		candidates = append(candidates, "~/source")
+	}
+	if root, err := ghqRoot(); err == nil && root != "" {
+		candidates = append([]string{root}, candidates...)
+	}
+
+	var roots []string
+	seen := map[string]bool{}
+	for _, candidate := range candidates {
+		path := filepath.Clean(ExpandPath(candidate))
+		if path == "" || seen[path] {
+			continue
+		}
+		if st, err := os.Stat(path); err == nil && st.IsDir() {
+			roots = append(roots, path)
+			seen[path] = true
+		}
+	}
+	return roots
 }
 
 func ConfigDir() (string, error) {
@@ -113,6 +140,11 @@ func ExpandPath(p string) string {
 	if p == "" {
 		return p
 	}
+	if p == "~" {
+		if home, err := os.UserHomeDir(); err == nil {
+			return home
+		}
+	}
 	if strings.HasPrefix(p, "~/") {
 		home, err := os.UserHomeDir()
 		if err == nil {
@@ -139,7 +171,7 @@ func Load() (Config, error) {
 		return cfg, fmt.Errorf("parse config: %w", err)
 	}
 	if cfg.ScanDepth <= 0 {
-		cfg.ScanDepth = 6
+		cfg.ScanDepth = 4
 	}
 	if len(cfg.ScanMarkers) == 0 {
 		cfg.ScanMarkers = []string{".devctl.toml"}
@@ -218,9 +250,24 @@ func ghqRootsForSlug() []string {
 			}
 		}
 	}
-	roots = append(roots, "~/ghq", "~/src", "~/Projects")
-	// also scan_roots from default
+	roots = append(roots, DefaultScanRoots()...)
 	return roots
+}
+
+func ghqRoot() (string, error) {
+	cmd := exec.Command("ghq", "root")
+	out, err := cmd.Output()
+	if err != nil {
+		return "", err
+	}
+	root := strings.TrimSpace(string(out))
+	if root == "" {
+		return "", os.ErrNotExist
+	}
+	if i := strings.IndexByte(root, '\n'); i >= 0 {
+		root = strings.TrimSpace(root[:i])
+	}
+	return root, nil
 }
 
 // ResolveProjectFilePath returns which config file applies (repo wins if both exist).
