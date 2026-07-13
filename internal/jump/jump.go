@@ -185,10 +185,26 @@ func InPopup() bool {
 	return os.Getenv("DEVCTL_POPUP") == "1"
 }
 
-// To opens or switches to a tmux session rooted at path.
+// PrintPath writes a validated directory path for shell wrappers such as:
+//
+//	cd "$(devctl jump)"
+func PrintPath(path string) error {
+	path = filepath.Clean(path)
+	st, err := os.Stat(path)
+	if err != nil {
+		return err
+	}
+	if !st.IsDir() {
+		return fmt.Errorf("not a directory: %s", path)
+	}
+	_, err = fmt.Fprintln(os.Stdout, path)
+	return err
+}
+
+// ToTmux opens or switches to a tmux session rooted at path.
 // Inside a tmux popup, records a pending switch so the popup wrapper can
 // apply it after the popup closes (switch-client alone is undone on close).
-func To(path string) error {
+func ToTmux(path string) error {
 	path = filepath.Clean(path)
 	st, err := os.Stat(path)
 	if err != nil {

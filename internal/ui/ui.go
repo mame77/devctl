@@ -33,12 +33,12 @@ var (
 	cursorStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("11")).Bold(true)
 	runningStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("10")).Bold(true)
 	// repository names stay white
-	normalStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("15"))
-	errStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("9"))
-	statusStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("14"))
-	dimStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
-	searchStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("14")).Bold(true)
-	panelStyle   = lipgloss.NewStyle().
+	normalStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("15"))
+	errStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("9"))
+	statusStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("14"))
+	dimStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
+	searchStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("14")).Bold(true)
+	panelStyle  = lipgloss.NewStyle().
 			Border(lipgloss.RoundedBorder()).
 			BorderForeground(lipgloss.Color("15")).
 			Padding(0, 1)
@@ -51,16 +51,15 @@ type Model struct {
 	offset    int            // list scroll offset
 	query     string         // name filter (case-insensitive substring)
 	searching bool           // typing into /
-	focus     string // "list" | "ports"
-	portCur   int    // cursor in running ports panel
-	showHelp  bool   // ctrl+p toggles key help overlay
+	focus     string         // "list" | "ports"
+	portCur   int            // cursor in running ports panel
+	showHelp  bool           // ctrl+p toggles key help overlay
 	status    string
 	errMsg    string
 	width     int
 	height    int
 	quitting  bool
-	jumpPath  string // set when quitting to jump via tmux
-	wantFzf   bool   // quit then open fzf picker
+	jumpPath  string
 }
 
 func New(mgr *session.Manager) Model {
@@ -396,13 +395,15 @@ func (m Model) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.quitting = true
 		return m, tea.Quit
 	case "ctrl+g":
-		m.wantFzf = true
-		m.quitting = true
-		return m, tea.Quit
+		m.focus = "list"
+		m.showHelp = false
+		m.searching = true
+		return m, nil
 	case "r":
 		_ = m.mgr.ReloadConfig()
+		_ = m.mgr.Rescan()
 		m.reload()
-		m.status = "reloaded"
+		m.status = "rescanned"
 	case "e":
 		if m.focus == "ports" {
 			return m, nil
@@ -776,9 +777,9 @@ func helpText() string {
 	return strings.Join([]string{
 		titleStyle.Render("keys") + dimStyle.Render("  ctrl+p close"),
 		dimStyle.Render("j/k") + " move   " + dimStyle.Render("tab/h/l") + " list/ports",
-		dimStyle.Render("/") + " search   " + dimStyle.Render("e") + " edit   " + dimStyle.Render("enter/g") + " jump",
+		dimStyle.Render("/") + " search   " + dimStyle.Render("ctrl+g") + " search   " + dimStyle.Render("e") + " edit   " + dimStyle.Render("enter/g") + " jump",
 		dimStyle.Render("space") + " start   " + dimStyle.Render("o") + " open   " + dimStyle.Render("x") + " kill",
-		dimStyle.Render("a") + " kill-all   " + dimStyle.Render("r") + " reload   " + dimStyle.Render("q") + " quit",
+		dimStyle.Render("a") + " kill-all   " + dimStyle.Render("r") + " rescan   " + dimStyle.Render("q") + " quit",
 	}, "\n")
 }
 
@@ -1084,7 +1085,7 @@ func openProjectEditor(dir, name string) tea.Cmd {
 	})
 }
 
-func Run(mgr *session.Manager) error {
+func Run(mgr *session.Manager, tmuxJump bool) error {
 	p := tea.NewProgram(New(mgr), tea.WithAltScreen())
 	final, err := p.Run()
 	if err != nil {
@@ -1094,11 +1095,11 @@ func Run(mgr *session.Manager) error {
 	if !ok {
 		return nil
 	}
-	if m.wantFzf {
-		return jump.Interactive()
-	}
 	if m.jumpPath != "" {
-		return jump.To(m.jumpPath)
+		if tmuxJump {
+			return jump.ToTmux(m.jumpPath)
+		}
+		return jump.PrintPath(m.jumpPath)
 	}
 	return nil
 }

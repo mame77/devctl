@@ -17,11 +17,45 @@ type Project struct {
 	Path     string
 	Command  string
 	Ports    []int
-	Source   string // "config" | "scan" | "ghq"
+	Source   string // "config" | "scan"
 	Runnable bool   // command set manually (config or .devctl.toml)
 }
 
 func Discover(cfg config.Config) ([]Project, error) {
+	scanned, err := Scan(cfg)
+	if err != nil {
+		return nil, err
+	}
+	return Merge(cfg, scanned), nil
+}
+
+func Scan(cfg config.Config) ([]Project, error) {
+	byPath := map[string]Project{}
+	roots := cfg.ScanRoots
+	if len(roots) == 0 {
+		roots = config.DefaultScanRoots()
+	}
+	for _, root := range roots {
+		if root == "" {
+			continue
+		}
+		root = config.ExpandPath(root)
+		if _, err := os.Stat(root); err != nil {
+			continue
+		}
+		_ = walkGitRepos(root, cfg.ScanDepth, byPath)
+	}
+	var out []Project
+	for _, p := range byPath {
+		out = append(out, p)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		return strings.ToLower(out[i].Path) < strings.ToLower(out[j].Path)
+	})
+	return out, nil
+}
+
+func Merge(cfg config.Config, scanned []Project) []Project {
 	byPath := map[string]Project{}
 
 	// explicit projects first (command must be set manually)
@@ -43,31 +77,19 @@ func Discover(cfg config.Config) ([]Project, error) {
 			Runnable: p.Command != "",
 		}
 	}
-
-	// one entry per repository root — walk scan_roots (no ghq dependency)
-	roots := cfg.ScanRoots
-	if len(roots) == 0 {
-		roots = config.DefaultScanRoots()
-	}
-	for _, root := range roots {
-		if root == "" {
+	for _, p := range scanned {
+		if existing, ok := byPath[p.Path]; ok && existing.Source == "config" {
 			continue
 		}
-		root = config.ExpandPath(root)
-		if _, err := os.Stat(root); err != nil {
-			continue
-		}
-		_ = walkGitRepos(root, cfg.ScanDepth, byPath)
+		byPath[p.Path] = p
 	}
-
 	// apply temporary ignore (explicit config projects are kept)
 	for path, p := range byPath {
 		if p.Source != "config" && isIgnored(path, cfg.Ignore) {
 			delete(byPath, path)
 		}
 	}
-
-	return orderProjects(cfg, byPath), nil
+	return orderProjects(cfg, byPath)
 }
 
 func orderProjects(cfg config.Config, byPath map[string]Project) []Project {
@@ -193,7 +215,7 @@ func addRepoRoot(root string, byPath map[string]Project, source string) {
 	}
 }
 
-func skipDir(root, path, name string) bool {
+func skipDir(root, name string) bool {
 	switch name {
 	case "node_modules", ".git", "vendor", "dist", "build", ".next", "target",
 		"coverage", ".turbo", ".cache", "tmp", "temp", ".idea", ".vscode":
@@ -243,7 +265,7 @@ func walkGitRepos(root string, maxDepth int, byPath map[string]Project) error {
 		if depth > maxDepth {
 			return filepath.SkipDir
 		}
-		if skipDir(root, path, d.Name()) && path != root {
+		if skipDir(root, d.Name()) && path != root {
 			return filepath.SkipDir
 		}
 		if st, err := os.Stat(filepath.Join(path, ".git")); err == nil && (st.IsDir() || st.Mode().IsRegular()) {

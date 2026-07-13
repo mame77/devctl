@@ -45,12 +45,15 @@ func New() (*Manager, error) {
 		return nil, err
 	}
 	mgr := &Manager{cfg: cfg}
-	if projects, err := state.LoadDiscoveredProjects(); err == nil {
-		mgr.projects = projects
-		go mgr.refreshProjects(cfg)
+	if ok, err := state.HasDiscoveredProjects(); err == nil && ok {
+		scanned, err := state.LoadDiscoveredProjects()
+		if err != nil {
+			return nil, err
+		}
+		mgr.projects = discover.Merge(cfg, scanned)
 		return mgr, nil
 	}
-	if err := mgr.refreshProjects(cfg); err != nil {
+	if err := mgr.Rescan(); err != nil {
 		return nil, err
 	}
 	return mgr, nil
@@ -63,8 +66,12 @@ func (m *Manager) ReloadConfig() error {
 	}
 	m.mu.Lock()
 	m.cfg = cfg
+	scanned, loadErr := state.LoadDiscoveredProjects()
+	if loadErr == nil {
+		m.projects = discover.Merge(cfg, scanned)
+	}
 	m.mu.Unlock()
-	return m.refreshProjects(cfg)
+	return nil
 }
 
 func (m *Manager) List() ([]Item, error) {
@@ -279,14 +286,20 @@ func (m *Manager) StartSwitch(name string) error {
 	})
 }
 
-func (m *Manager) refreshProjects(cfg config.Config) error {
-	projects, err := discover.Discover(cfg)
+func (m *Manager) Rescan() error {
+	m.mu.RLock()
+	cfg := m.cfg
+	m.mu.RUnlock()
+	scanned, err := discover.Scan(cfg)
 	if err != nil {
 		return err
 	}
+	if err := state.SaveDiscoveredProjects(scanned); err != nil {
+		return err
+	}
+	projects := discover.Merge(cfg, scanned)
 	m.mu.Lock()
 	m.projects = projects
 	m.mu.Unlock()
-	_ = state.SaveDiscoveredProjects(projects)
 	return nil
 }

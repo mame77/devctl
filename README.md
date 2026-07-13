@@ -15,28 +15,30 @@ go install .
 
 ```bash
 devctl              # TUI
-devctl jump         # fzf で ghq リポジトリを選び tmux セッションへ (Ctrl+G 相当)
-devctl jump <path>  # 指定 path へ直接 jump
+devctl jump         # built-in TUI で選んだ path を出力
+cd "$(devctl jump)" # 選んだリポジトリへ移動
+devctl jump --tmux  # tmux セッションへ移動
 devctl status       # 起動中を表示
 devctl kill --all   # 全停止
 devctl init         # カレントに .devctl.toml を生成
+devctl scan         # discovered cache を更新
 ```
 
 ### Shell binding (Ctrl+G)
 
-`~/.bashrc` の `projects-fzf` の代わりに:
+`~/.bashrc` のリポジトリ移動キーバインドの代わりに:
 
 ```bash
-bind -x '"\C-g": devctl jump'
+bind -x '"\C-g": cd "$($HOME/go/bin/devctl jump)"'
 ```
 
 ### tmux popup (`prefix+d`)
 
-popup 内で Enter jump すると、popup 終了時に元セッションへ戻る。  
-次のように **popup 後に pending を適用**する:
+tmux 連携はオプションです。popup 内で tmux jump したい場合だけ、
+次のように **popup 後に pending を適用**します:
 
 ```tmux
-bind d run-shell 'tmux display-popup -d "#{pane_current_path}" -E -w 100% -h 100% "env DEVCTL_POPUP=1 $HOME/go/bin/devctl"; $HOME/go/bin/devctl jump --apply-pending'
+bind d run-shell 'tmux display-popup -d "#{pane_current_path}" -E -w 100% -h 100% "env DEVCTL_POPUP=1 $HOME/go/bin/devctl jump --tmux"; $HOME/go/bin/devctl jump --apply-pending'
 ```
 
 `nix-config` の `dotfiles/tmux/tmux.conf` には既に反映済み。`home-manager switch` 後に有効。
@@ -50,13 +52,13 @@ bind d run-shell 'tmux display-popup -d "#{pane_current_path}" -E -w 100% -h 100
 | `/` | filter by repository name |
 | `Esc` | close help / clear filter / leave ports focus |
 | `e` | edit repo config under `~/.config/devctl/projects/` |
-| `Enter` / `g` | jump to selected project (tmux) |
-| `Ctrl+G` | fzf pick any ghq repo → jump |
+| `Enter` / `g` | print selected project path |
+| `Ctrl+G` | start search |
 | `Space` | start / switch (kills others with ports) |
 | `o` | open primary port in browser |
 | `x` | kill selected (list or ports panel) |
 | `a` | kill all |
-| `r` | reload |
+| `r` | rescan repositories |
 | `q` | quit TUI (dev keeps running) |
 
 ## Config
@@ -74,8 +76,10 @@ and `node_modules`/`vendor`/`dist`/… are skipped. If you explicitly set
 `scan_roots = ["~"]`, devctl also skips OS-specific heavy directories such as
 `~/Library` on macOS as a safety guard.
 
-Discovered repositories are cached under `~/.local/state/devctl/cache/` so the
-TUI can start from the previous result and refresh in the background.
+Discovered repositories are cached under `~/.local/state/devctl/cache/`.
+`devctl` reads that cache on startup and does not rescan automatically unless
+the cache does not exist yet. Run `devctl scan` or press `r` in the TUI to
+refresh it.
 
 **Command is manual.** Space start works only when you set `command`.
 

@@ -19,7 +19,7 @@ var rootCmd = &cobra.Command{
 	Short: "TUI to manage dev servers across repositories",
 	Long:  "devctl lists configured/scanned projects and lets you start/switch/kill dev processes (one at a time).",
 	RunE: func(cmd *cobra.Command, args []string) error {
-		return runTUI()
+		return runTUI(false)
 	},
 }
 
@@ -27,7 +27,7 @@ var tuiCmd = &cobra.Command{
 	Use:   "tui",
 	Short: "Open the TUI",
 	RunE: func(cmd *cobra.Command, args []string) error {
-		return runTUI()
+		return runTUI(false)
 	},
 }
 
@@ -87,6 +87,29 @@ var startCmd = &cobra.Command{
 			return err
 		}
 		fmt.Printf("started %s\n", args[0])
+		return nil
+	},
+}
+
+var scanCmd = &cobra.Command{
+	Use:   "scan",
+	Short: "Scan repositories and refresh the discovered cache",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		mgr, err := session.New()
+		if err != nil {
+			return err
+		}
+		if err := mgr.ReloadConfig(); err != nil {
+			return err
+		}
+		if err := mgr.Rescan(); err != nil {
+			return err
+		}
+		items, err := mgr.List()
+		if err != nil {
+			return err
+		}
+		fmt.Printf("scanned %d projects\n", len(items))
 		return nil
 	},
 }
@@ -158,18 +181,21 @@ With --local: <cwd>/.devctl.toml
 
 var jumpCmd = &cobra.Command{
 	Use:   "jump [path]",
-	Short: "fzf-select a ghq repo and open/switch tmux session (Ctrl+G replacement)",
-	Long: `Pick a repository with fzf (ghq list + git-managed ~/.config/*) and
-create or switch to a tmux session named after the directory basename.
+	Short: "Pick a repository path for cd, or jump via tmux with --tmux",
+	Long: `Pick a repository from the discovered cache and print its path.
+This is intended for shell wrappers such as:
 
-With no args: interactive fzf picker.
-With a path: jump directly without fzf.
+  cd "$(devctl jump)"
+
+With no args: open the built-in TUI picker.
+With a path: print that path after validation.
+With --tmux: create or switch to a tmux session instead.
 
 Shell binding example (bash):
-  bind -x '"\C-g": devctl jump'
+  bind -x '"\C-g": cd "$(devctl jump)"'
 
-tmux popup (prefix+d) must apply pending after close:
-  bind d run-shell 'tmux display-popup -E -w 100% -h 100% "devctl"; devctl jump --apply-pending'
+tmux popup (prefix+d) can still apply pending after close:
+  bind d run-shell 'tmux display-popup -E -w 100% -h 100% "devctl jump --tmux"; devctl jump --apply-pending'
 `,
 	Args: cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
@@ -177,27 +203,32 @@ tmux popup (prefix+d) must apply pending after close:
 			return jump.ApplyPending()
 		}
 		if len(args) == 1 {
-			return jump.To(args[0])
+			if jumpTmux {
+				return jump.ToTmux(args[0])
+			}
+			return jump.PrintPath(args[0])
 		}
-		return jump.Interactive()
+		return runTUI(jumpTmux)
 	},
 }
 
 var applyPending bool
+var jumpTmux bool
 
-func runTUI() error {
+func runTUI(tmuxJump bool) error {
 	mgr, err := session.New()
 	if err != nil {
 		return err
 	}
-	return ui.Run(mgr)
+	return ui.Run(mgr, tmuxJump)
 }
 
 func Execute() {
 	killCmd.Flags().BoolVar(&killAll, "all", false, "kill all running projects")
 	initCmd.Flags().BoolVar(&initLocal, "local", false, "write .devctl.toml in the current directory")
 	jumpCmd.Flags().BoolVar(&applyPending, "apply-pending", false, "switch to session recorded by popup jump")
-	rootCmd.AddCommand(tuiCmd, statusCmd, startCmd, killCmd, initCmd, jumpCmd)
+	jumpCmd.Flags().BoolVar(&jumpTmux, "tmux", false, "open or switch tmux session instead of printing the path")
+	rootCmd.AddCommand(tuiCmd, statusCmd, startCmd, killCmd, initCmd, jumpCmd, scanCmd)
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)

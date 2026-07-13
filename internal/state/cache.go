@@ -28,6 +28,21 @@ func discoveredCachePath() (string, error) {
 	return filepath.Join(dir, "discovered.json"), nil
 }
 
+func HasDiscoveredProjects() (bool, error) {
+	path, err := discoveredCachePath()
+	if err != nil {
+		return false, err
+	}
+	_, err = os.Stat(path)
+	if err == nil {
+		return true, nil
+	}
+	if os.IsNotExist(err) {
+		return false, nil
+	}
+	return false, err
+}
+
 func LoadDiscoveredProjects() ([]discover.Project, error) {
 	path, err := discoveredCachePath()
 	if err != nil {
