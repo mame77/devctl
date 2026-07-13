@@ -15,8 +15,8 @@ go install .
 
 ```bash
 devctl              # TUI
-devctl jump         # built-in TUI で選んだ path を出力
-cd "$(devctl jump)" # 選んだリポジトリへ移動
+devctl shell zsh    # parent shell を cd できるラッパー関数を出力
+devctl jump         # built-in TUI で選んだ path へ移動 (shell integration 有効時)
 devctl jump --tmux  # tmux セッションへ移動
 devctl status       # 起動中を表示
 devctl kill --all   # 全停止
@@ -24,12 +24,32 @@ devctl init         # カレントに .devctl.toml を生成
 devctl scan         # discovered cache を更新
 ```
 
-### Shell binding (Ctrl+G)
+### Shell integration
 
-`~/.bashrc` のリポジトリ移動キーバインドの代わりに:
+`devctl` から親シェルのカレントディレクトリを直接変更することはできません。
+リポジトリ移動を有効にするには、シェル起動ファイルにラッパー関数を追加します。
+
+zsh:
+
+```zsh
+eval "$(devctl shell zsh)"
+```
+
+bash:
 
 ```bash
-bind -x '"\C-g": cd "$($HOME/go/bin/devctl jump)"'
+eval "$(devctl shell bash)"
+```
+
+ラッパーは `devctl --cwd-file <tmp>` で選択結果を一時ファイルに書かせ、
+TUI 終了後にシェル関数側で `cd` します。
+
+### Shell binding (Ctrl+G)
+
+shell integration を有効にした後で、必要ならキーに割り当てます。
+
+```bash
+bind -x '"\C-g": devctl jump'
 ```
 
 ### tmux popup (`prefix+d`)

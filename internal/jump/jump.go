@@ -189,6 +189,11 @@ func InPopup() bool {
 //
 //	cd "$(devctl jump)"
 func PrintPath(path string) error {
+	return WritePath(path, "")
+}
+
+// WritePath writes a validated directory path to cwdFile, or stdout if cwdFile is empty.
+func WritePath(path, cwdFile string) error {
 	path = filepath.Clean(path)
 	st, err := os.Stat(path)
 	if err != nil {
@@ -196,6 +201,12 @@ func PrintPath(path string) error {
 	}
 	if !st.IsDir() {
 		return fmt.Errorf("not a directory: %s", path)
+	}
+	if cwdFile != "" {
+		if err := os.MkdirAll(filepath.Dir(cwdFile), 0o755); err != nil {
+			return err
+		}
+		return os.WriteFile(cwdFile, []byte(path+"\n"), 0o600)
 	}
 	_, err = fmt.Fprintln(os.Stdout, path)
 	return err

@@ -1085,7 +1085,7 @@ func openProjectEditor(dir, name string) tea.Cmd {
 	})
 }
 
-func Run(mgr *session.Manager, tmuxJump bool) error {
+func Run(mgr *session.Manager, tmuxJump bool, cwdFile string) error {
 	p := tea.NewProgram(New(mgr), tea.WithAltScreen())
 	final, err := p.Run()
 	if err != nil {
@@ -1099,7 +1099,7 @@ func Run(mgr *session.Manager, tmuxJump bool) error {
 		if tmuxJump {
 			return jump.ToTmux(m.jumpPath)
 		}
-		return jump.PrintPath(m.jumpPath)
+		return jump.WritePath(m.jumpPath, cwdFile)
 	}
 	return nil
 }

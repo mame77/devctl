@@ -190,9 +190,11 @@ This is intended for shell wrappers such as:
 With no args: open the built-in TUI picker.
 With a path: print that path after validation.
 With --tmux: create or switch to a tmux session instead.
+With --cwd-file: write the selected path to a file instead of stdout.
 
-Shell binding example (bash):
-  bind -x '"\C-g": cd "$(devctl jump)"'
+Shell integration:
+  eval "$(devctl shell zsh)"
+  eval "$(devctl shell bash)"
 
 tmux popup (prefix+d) can still apply pending after close:
   bind d run-shell 'tmux display-popup -E -w 100% -h 100% "devctl jump --tmux"; devctl jump --apply-pending'
@@ -206,29 +208,76 @@ tmux popup (prefix+d) can still apply pending after close:
 			if jumpTmux {
 				return jump.ToTmux(args[0])
 			}
-			return jump.PrintPath(args[0])
+			return jump.WritePath(args[0], cwdFile)
 		}
 		return runTUI(jumpTmux)
 	},
 }
 
+var shellCmd = &cobra.Command{
+	Use:   "shell <bash|zsh>",
+	Short: "Print shell integration for changing the parent shell directory",
+	Long: `Print a shell function that wraps devctl with --cwd-file.
+
+Add one of these to your shell startup file:
+
+  eval "$(devctl shell zsh)"
+  eval "$(devctl shell bash)"
+`,
+	Args: cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		switch args[0] {
+		case "bash", "zsh":
+			fmt.Fprint(os.Stdout, shellFunction(args[0]))
+			return nil
+		default:
+			return fmt.Errorf("unsupported shell %q (supported: bash, zsh)", args[0])
+		}
+	},
+}
+
 var applyPending bool
 var jumpTmux bool
+var cwdFile string
 
 func runTUI(tmuxJump bool) error {
 	mgr, err := session.New()
 	if err != nil {
 		return err
 	}
-	return ui.Run(mgr, tmuxJump)
+	return ui.Run(mgr, tmuxJump, cwdFile)
+}
+
+func shellFunction(shell string) string {
+	readFile := `dir="$(cat "$tmp")"`
+	if shell == "zsh" {
+		readFile = `dir="$(<"$tmp")"`
+	}
+	return fmt.Sprintf(`devctl() {
+  local tmp
+  tmp="$(mktemp -t devctl-cwd.XXXXXX)" || return
+  command devctl --cwd-file "$tmp" "$@"
+  local ret=$?
+  if [ -s "$tmp" ]; then
+    local dir
+    %s
+    if [ -d "$dir" ]; then
+      cd -- "$dir"
+    fi
+  fi
+  rm -f -- "$tmp"
+  return $ret
+}
+`, readFile)
 }
 
 func Execute() {
+	rootCmd.PersistentFlags().StringVar(&cwdFile, "cwd-file", "", "write selected jump path to this file instead of stdout")
 	killCmd.Flags().BoolVar(&killAll, "all", false, "kill all running projects")
 	initCmd.Flags().BoolVar(&initLocal, "local", false, "write .devctl.toml in the current directory")
 	jumpCmd.Flags().BoolVar(&applyPending, "apply-pending", false, "switch to session recorded by popup jump")
 	jumpCmd.Flags().BoolVar(&jumpTmux, "tmux", false, "open or switch tmux session instead of printing the path")
-	rootCmd.AddCommand(tuiCmd, statusCmd, startCmd, killCmd, initCmd, jumpCmd, scanCmd)
+	rootCmd.AddCommand(tuiCmd, statusCmd, startCmd, killCmd, initCmd, jumpCmd, scanCmd, shellCmd)
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
