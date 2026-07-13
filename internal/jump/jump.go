@@ -185,13 +185,6 @@ func InPopup() bool {
 	return os.Getenv("DEVCTL_POPUP") == "1"
 }
 
-// PrintPath writes a validated directory path for shell wrappers such as:
-//
-//	cd "$(devctl jump)"
-func PrintPath(path string) error {
-	return WritePath(path, "")
-}
-
 // WritePath writes a validated directory path to cwdFile, or stdout if cwdFile is empty.
 func WritePath(path, cwdFile string) error {
 	path = filepath.Clean(path)

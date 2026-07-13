@@ -182,17 +182,14 @@ With --local: <cwd>/.devctl.toml
 var jumpCmd = &cobra.Command{
 	Use:   "jump [path]",
 	Short: "Pick a repository path for cd, or jump via tmux with --tmux",
-	Long: `Pick a repository from the discovered cache and print its path.
-This is intended for shell wrappers such as:
-
-  cd "$(devctl jump)"
+	Long: `Pick a repository from the discovered cache.
 
 With no args: open the built-in TUI picker.
 With a path: print that path after validation.
 With --tmux: create or switch to a tmux session instead.
 With --cwd-file: write the selected path to a file instead of stdout.
 
-Shell integration:
+To change the parent shell directory, install the shell integration:
   eval "$(devctl shell zsh)"
   eval "$(devctl shell bash)"
 
@@ -228,7 +225,7 @@ Add one of these to your shell startup file:
 	RunE: func(cmd *cobra.Command, args []string) error {
 		switch args[0] {
 		case "bash", "zsh":
-			fmt.Fprint(os.Stdout, shellFunction(args[0]))
+			fmt.Fprint(os.Stdout, shellFunction())
 			return nil
 		default:
 			return fmt.Errorf("unsupported shell %q (supported: bash, zsh)", args[0])
@@ -248,19 +245,15 @@ func runTUI(tmuxJump bool) error {
 	return ui.Run(mgr, tmuxJump, cwdFile)
 }
 
-func shellFunction(shell string) string {
-	readFile := `dir="$(cat "$tmp")"`
-	if shell == "zsh" {
-		readFile = `dir="$(<"$tmp")"`
-	}
-	return fmt.Sprintf(`devctl() {
+func shellFunction() string {
+	return `devctl() {
   local tmp
   tmp="$(mktemp -t devctl-cwd.XXXXXX)" || return
   command devctl --cwd-file "$tmp" "$@"
   local ret=$?
   if [ -s "$tmp" ]; then
     local dir
-    %s
+    dir="$(<"$tmp")"
     if [ -d "$dir" ]; then
       cd -- "$dir"
     fi
@@ -268,7 +261,7 @@ func shellFunction(shell string) string {
   rm -f -- "$tmp"
   return $ret
 }
-`, readFile)
+`
 }
 
 func Execute() {

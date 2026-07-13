@@ -43,6 +43,8 @@ eval "$(devctl shell bash)"
 
 ラッパーは `devctl --cwd-file <tmp>` で選択結果を一時ファイルに書かせ、
 TUI 終了後にシェル関数側で `cd` します。
+スクリプトで path を stdout から受け取りたい場合は、関数を避けて
+`command devctl jump <path>` を使ってください。
 
 ### Shell binding (Ctrl+G)
 
