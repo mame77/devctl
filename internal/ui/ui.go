@@ -66,7 +66,14 @@ type Model struct {
 
 	killedUntil map[string]time.Time
 	killedPos   map[string]int
+
+	showLog  bool
+	logName  string
+	logLines []string
+	logOff   int
 }
+
+const logViewLines = 20
 
 func New(mgr *session.Manager) Model {
 	m := Model{mgr: mgr}
@@ -85,10 +92,12 @@ func (m *Model) reload() {
 		m.errMsg = err.Error()
 		return
 	}
-	// keep selection by name across reload when possible
+	// save selected name for cursor restoration (unless killed items are active)
 	var selected string
-	if filtered := m.filtered(); len(filtered) > 0 && m.cursor < len(filtered) {
-		selected = filtered[m.cursor].Name
+	if len(m.killedPos) == 0 {
+		if filtered := m.filtered(); len(filtered) > 0 && m.cursor < len(filtered) {
+			selected = filtered[m.cursor].Name
+		}
 	}
 	m.allItems = items
 	now := time.Now()
@@ -111,17 +120,68 @@ func (m *Model) reload() {
 		}
 	}
 	// do not clear errMsg/status here — tick reloads must not hide feedback
-	m.cursor = 0
 	if selected != "" {
 		for i, it := range m.filtered() {
 			if it.Name == selected {
 				m.cursor = i
-				break
+				m.clampCursor()
+				m.ensureVisible(m.listRows())
+				return
 			}
 		}
 	}
 	m.clampCursor()
 	m.ensureVisible(m.listRows())
+}
+
+func (m *Model) refreshLog() {
+	path, err := state.LogPath(m.logName)
+	if err != nil {
+		m.logLines = []string{errStyle.Render("log: " + err.Error())}
+		return
+	}
+	m.logLines = tailFile(path, logViewLines)
+}
+
+func tailFile(path string, n int) []string {
+	f, err := os.Open(path)
+	if err != nil {
+		return []string{errStyle.Render("(no log yet)")}
+	}
+	defer f.Close()
+
+	stat, err := f.Stat()
+	if err != nil || stat.Size() == 0 {
+		return []string{errStyle.Render("(empty)")}
+	}
+
+	const bufSize = 4096
+	offset := stat.Size() - bufSize
+	if offset < 0 {
+		offset = 0
+	}
+
+	buf := make([]byte, bufSize)
+	_, _ = f.ReadAt(buf, offset)
+	lines := strings.Split(string(buf), "\n")
+	lines = trimBlankLines(lines)
+	if offset > 0 {
+		lines = lines[1:] // drop partial first line
+	}
+	if len(lines) > n {
+		lines = lines[len(lines)-n:]
+	}
+	for i := range lines {
+		lines[i] = strings.TrimRight(lines[i], "\r")
+	}
+	return lines
+}
+
+func trimBlankLines(lines []string) []string {
+	for len(lines) > 0 && strings.TrimSpace(lines[len(lines)-1]) == "" {
+		lines = lines[:len(lines)-1]
+	}
+	return lines
 }
 
 // indexForCwd returns the filtered-list index for the project that best matches
@@ -218,6 +278,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tickMsg:
 		m.reload()
+		if m.showLog {
+			m.refreshLog()
+		}
 		return m, tickCmd()
 
 	case doneMsg:
@@ -246,9 +309,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					break
 				}
 			}
-			keep := m.cursor
 			m.reload()
-			m.cursor = keep
 		} else if strings.HasPrefix(msg.status, "unpinned ") {
 			keep := m.cursor
 			m.reload()
@@ -341,6 +402,16 @@ func (m Model) updateSearch(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if m.showLog {
+		switch msg.String() {
+		case "esc", "l":
+			m.showLog = false
+			m.logLines = nil
+			return m, nil
+		}
+		// don't block navigation in log mode
+	}
+
 	if m.confirmTarget != "" {
 		return m.updateConfirm(msg)
 	}
@@ -402,6 +473,21 @@ func (m Model) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		it := items[m.cursor]
 		return m, openProjectEditor(it.Path, it.Name)
+	case "l":
+		if len(items) == 0 {
+			return m, nil
+		}
+		it := items[m.cursor]
+		m.logName = it.Name
+		m.showLog = true
+		m.refreshLog()
+		return m, nil
+	case "h":
+		if len(items) == 0 {
+			return m, nil
+		}
+		it := items[m.cursor]
+		return m, openPager(it.Name)
 	case " ":
 		if len(items) == 0 {
 			return m, nil
@@ -608,6 +694,11 @@ func (m Model) renderItem(i int, it session.Item) string {
 		nameStyle = cursorStyle
 	}
 
+	portStyle := dimStyle
+	if it.Running || isCursor {
+		portStyle = normalStyle
+	}
+
 	portStr := ""
 	if len(it.Ports) > 0 {
 		parts := make([]string, len(it.Ports))
@@ -645,17 +736,17 @@ func (m Model) renderItem(i int, it session.Item) string {
 
 	extra := ""
 	if isKilled {
-		extra = errStyle.Render("  killed") + nameStyle.Render(portStr)
+		extra = errStyle.Render("  killed") + portStyle.Render(portStr)
 	} else if it.Done {
-		extra = statusStyle.Render("  Done") + nameStyle.Render(portStr)
+		extra = statusStyle.Render("  Done") + portStyle.Render(portStr)
 	} else if it.Running && it.PortsReadyAt != nil {
-		extra = nameStyle.Render(portStr)
+		extra = portStyle.Render(portStr)
 	} else if it.Running {
-		extra = runningStyle.Render("  running") + nameStyle.Render(portStr)
+		extra = runningStyle.Render("  running") + portStyle.Render(portStr)
 	} else if it.Failed {
-		extra = errStyle.Render("  failed") + nameStyle.Render(portStr)
+		extra = errStyle.Render("  failed") + portStyle.Render(portStr)
 	} else {
-		extra = nameStyle.Render(portStr)
+		extra = portStyle.Render(portStr)
 	}
 
 	name := nameStyle.Render(it.Name)
@@ -674,7 +765,16 @@ func (m Model) View() string {
 
 	// build list body lines
 	bodyLines := make([]string, 0, listRows)
-	if len(m.allItems) == 0 {
+	if m.showLog {
+		bodyLines = append(bodyLines,
+			dimStyle.Render("── "+m.logName+" log ──"),
+			"",
+		)
+		bodyLines = append(bodyLines, m.logLines...)
+		for len(bodyLines) < listRows {
+			bodyLines = append(bodyLines, "")
+		}
+	} else if len(m.allItems) == 0 {
 		bodyLines = append(bodyLines,
 			dimStyle.Render("(no projects)"),
 			dimStyle.Render("(add config via e)"),
@@ -699,6 +799,8 @@ func (m Model) View() string {
 	activePorts := activePortSummary(m.allItems)
 	if activePorts != "" {
 		b.WriteString("  │ ")
+		b.WriteString(runningStyle.Render("active:"))
+		b.WriteString(" ")
 		b.WriteString(normalStyle.Render(activePorts))
 	}
 	b.WriteString("\n")
@@ -748,6 +850,7 @@ func (m Model) View() string {
 func helpText() string {
 	return strings.Join([]string{
 		titleStyle.Render("keys") + dimStyle.Render("  ctrl+p close"),
+		dimStyle.Render("l") + " log   " + dimStyle.Render("h") + " ext-log   " + dimStyle.Render("ctrl+p") + " keys",
 		dimStyle.Render("j/k") + " move   " + dimStyle.Render("/") + " search   " + dimStyle.Render("ctrl+g") + " search",
 		dimStyle.Render("e") + " edit   " + dimStyle.Render("enter/g") + " jump   " + dimStyle.Render("space") + " start/kill",
 		dimStyle.Render("o") + " open   " + dimStyle.Render("x") + " kill   " + dimStyle.Render("p") + " pin/unpin",
@@ -1035,6 +1138,24 @@ func openProjectEditor(dir, name string) tea.Cmd {
 	c.Dir = dir
 	return tea.ExecProcess(c, func(err error) tea.Msg {
 		return editorDoneMsg{err: err, path: path}
+	})
+}
+
+func openPager(name string) tea.Cmd {
+	path, err := state.LogPath(name)
+	if err != nil {
+		return func() tea.Msg { return doneMsg{err: err} }
+	}
+	pager := os.Getenv("PAGER")
+	if pager == "" {
+		pager = "less"
+	}
+	cmd := exec.Command(pager, "+F", path)
+	return tea.ExecProcess(cmd, func(err error) tea.Msg {
+		if err != nil {
+			return doneMsg{err: err}
+		}
+		return doneMsg{status: fmt.Sprintf("viewed log: %s", name)}
 	})
 }
 
