@@ -25,6 +25,7 @@ type Item struct {
 	PGID     int
 	Source   string
 	Runnable bool
+	Pinned   bool
 }
 
 func (it Item) PrimaryPort() int {
@@ -68,7 +69,7 @@ func New() (*Manager, error) {
 		if err != nil {
 			return nil, err
 		}
-		mgr.projects = discover.Merge(cfg, discover.Refresh(scanned))
+		mgr.projects = mergeWithPins(cfg, discover.Refresh(scanned))
 		return mgr, nil
 	}
 	if err := mgr.Rescan(); err != nil {
@@ -86,7 +87,7 @@ func (m *Manager) ReloadConfig() error {
 	m.cfg = cfg
 	scanned, loadErr := state.LoadDiscoveredProjects()
 	if loadErr == nil {
-		m.projects = discover.Merge(cfg, discover.Refresh(scanned))
+		m.projects = mergeWithPins(cfg, discover.Refresh(scanned))
 	}
 	m.mu.Unlock()
 	return nil
@@ -142,6 +143,7 @@ func (m *Manager) List() ([]Item, error) {
 			Ports:    append([]int(nil), p.Ports...),
 			Source:   p.Source,
 			Runnable: p.Runnable,
+			Pinned:   p.Pinned,
 		}
 		if e, ok := statusByName[p.Name]; ok {
 			it.PID = e.PID
@@ -387,9 +389,15 @@ func (m *Manager) Rescan() error {
 	if err := state.SaveDiscoveredProjects(scanned); err != nil {
 		return err
 	}
-	projects := discover.Merge(cfg, scanned)
+	projects := mergeWithPins(cfg, scanned)
 	m.mu.Lock()
 	m.projects = projects
 	m.mu.Unlock()
 	return nil
+}
+
+func mergeWithPins(cfg config.Config, scanned []discover.Project) []discover.Project {
+	merged := discover.Merge(cfg, scanned)
+	pins, _ := state.LoadPins()
+	return discover.ApplyPins(merged, pins)
 }

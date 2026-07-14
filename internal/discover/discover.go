@@ -19,6 +19,7 @@ type Project struct {
 	Ports    []int
 	Source   string // "config" | "scan"
 	Runnable bool   // command set manually (config or .devctl.toml)
+	Pinned   bool   // pinned via TUI toggle
 }
 
 func Discover(cfg config.Config) ([]Project, error) {
@@ -335,8 +336,11 @@ func isIgnored(abs string, ignores []string) bool {
 	return false
 }
 
-// ignoreKey returns a repo path relative to a known git root, then home.
-func ignoreKey(abs string) string {
+// ignoreKey (unexported alias for PathKey).
+func ignoreKey(abs string) string { return PathKey(abs) }
+
+// PathKey returns a repo path relative to a known git root, then home.
+func PathKey(abs string) string {
 	abs = filepath.Clean(abs)
 	for _, r := range ignoreRoots() {
 		r = filepath.Clean(config.ExpandPath(r))
@@ -353,6 +357,72 @@ func ignoreKey(abs string) string {
 		}
 	}
 	return filepath.ToSlash(abs)
+}
+
+// MatchPathKey reports whether abs matches any entry in entries.
+// Matching uses the same path-key logic as ignore/pin.
+func MatchPathKey(abs string, entries []string) bool {
+	key := PathKey(abs)
+	absClean := filepath.ToSlash(filepath.Clean(abs))
+	for _, e := range entries {
+		e = strings.TrimSpace(e)
+		if e == "" {
+			continue
+		}
+		eClean := filepath.ToSlash(filepath.Clean(config.ExpandPath(e)))
+		if filepath.IsAbs(eClean) {
+			if absClean == eClean || strings.HasPrefix(absClean, eClean+"/") {
+				return true
+			}
+			continue
+		}
+		if key == eClean || strings.HasPrefix(key, eClean+"/") {
+			return true
+		}
+	}
+	return false
+}
+
+// ApplyPins marks projects matching pins as Pinned=true and re-sorts:
+// pinned first (in pins order), then the rest maintaining existing order.
+func ApplyPins(projects []Project, pins []string) []Project {
+	if len(pins) == 0 {
+		for i := range projects {
+			projects[i].Pinned = false
+		}
+		return projects
+	}
+	pinnedOrder := make(map[string]int) // pathKey → position in pins
+	for i, p := range pins {
+		p = strings.TrimSpace(p)
+		if p == "" {
+			continue
+		}
+		key := filepath.ToSlash(filepath.Clean(p))
+		if _, ok := pinnedOrder[key]; !ok {
+			pinnedOrder[key] = i
+		}
+	}
+	var pinned, rest []Project
+	for i := range projects {
+		key := PathKey(projects[i].Path)
+		if _, ok := pinnedOrder[key]; ok {
+			projects[i].Pinned = true
+			pinned = append(pinned, projects[i])
+		} else {
+			projects[i].Pinned = false
+			rest = append(rest, projects[i])
+		}
+	}
+	sort.Slice(pinned, func(i, j int) bool {
+		ki := PathKey(pinned[i].Path)
+		kj := PathKey(pinned[j].Path)
+		return pinnedOrder[ki] < pinnedOrder[kj]
+	})
+	out := make([]Project, 0, len(projects))
+	out = append(out, pinned...)
+	out = append(out, rest...)
+	return out
 }
 
 func ignoreRoots() []string {

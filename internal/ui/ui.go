@@ -16,16 +16,14 @@ import (
 	"github.com/mame77/devctl/internal/config"
 	"github.com/mame77/devctl/internal/jump"
 	"github.com/mame77/devctl/internal/session"
+	"github.com/mame77/devctl/internal/state"
 )
 
 const (
 	panelHeightPct = 70 // percent of terminal height
 	minPanelHeight = 10
 	minListRows    = 3
-	minRightWidth  = 20
-	maxRightWidth  = 28
 	maxTotalWidth  = 78 // keep UI compact and centered
-	minLeftWidth   = 36
 )
 
 var (
@@ -53,8 +51,6 @@ type Model struct {
 	offset    int            // list scroll offset
 	query     string         // name filter (case-insensitive substring)
 	searching bool           // typing into /
-	focus     string         // "list" | "ports"
-	portCur   int            // cursor in running ports panel
 	showHelp  bool           // ctrl+p toggles key help overlay
 	status    string
 	errMsg    string
@@ -68,7 +64,7 @@ type Model struct {
 }
 
 func New(mgr *session.Manager) Model {
-	m := Model{mgr: mgr, focus: "list"}
+	m := Model{mgr: mgr}
 	m.reload()
 	// initial open: cursor on repo matching cwd
 	if idx := indexForCwd(m.filtered()); idx >= 0 {
@@ -101,32 +97,7 @@ func (m *Model) reload() {
 		}
 	}
 	m.clampCursor()
-	m.clampPortCursor()
 	m.ensureVisible(m.listRows())
-}
-
-func (m Model) runningItems() []session.Item {
-	var out []session.Item
-	for _, it := range m.allItems {
-		if it.Running {
-			out = append(out, it)
-		}
-	}
-	return out
-}
-
-func (m *Model) clampPortCursor() {
-	n := len(m.runningItems())
-	if n == 0 {
-		m.portCur = 0
-		return
-	}
-	if m.portCur >= n {
-		m.portCur = n - 1
-	}
-	if m.portCur < 0 {
-		m.portCur = 0
-	}
 }
 
 // indexForCwd returns the filtered-list index for the project that best matches
@@ -327,7 +298,6 @@ func (m Model) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 
 	items := m.filtered()
-	running := m.runningItems()
 
 	switch msg.String() {
 	case "q", "ctrl+c":
@@ -336,39 +306,13 @@ func (m Model) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "ctrl+p":
 		m.showHelp = !m.showHelp
 		return m, nil
-	case "tab":
-		m.showHelp = false
-		if m.focus == "ports" {
-			m.focus = "list"
-		} else {
-			m.focus = "ports"
-			m.clampPortCursor()
-		}
-		return m, nil
-	case "l", "right":
-		if m.focus == "list" {
-			m.showHelp = false
-			m.focus = "ports"
-			m.clampPortCursor()
-		}
-		return m, nil
-	case "h", "left":
-		if m.focus == "ports" {
-			m.focus = "list"
-		}
-		return m, nil
 	case "/":
-		m.focus = "list"
 		m.showHelp = false
 		m.searching = true
 		return m, nil
 	case "esc":
 		if m.showHelp {
 			m.showHelp = false
-			return m, nil
-		}
-		if m.focus == "ports" {
-			m.focus = "list"
 			return m, nil
 		}
 		if m.query != "" {
@@ -379,31 +323,16 @@ func (m Model) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case "j", "down":
-		if m.focus == "ports" {
-			if len(running) > 0 && m.portCur < len(running)-1 {
-				m.portCur++
-			}
-			return m, nil
-		}
 		if len(items) > 0 && m.cursor < len(items)-1 {
 			m.cursor++
 			m.ensureVisible(m.listRows())
 		}
 	case "k", "up":
-		if m.focus == "ports" {
-			if m.portCur > 0 {
-				m.portCur--
-			}
-			return m, nil
-		}
 		if m.cursor > 0 {
 			m.cursor--
 			m.ensureVisible(m.listRows())
 		}
 	case "enter", "g":
-		if m.focus == "ports" {
-			return m, m.openRunningPort()
-		}
 		if len(items) == 0 {
 			return m, nil
 		}
@@ -411,7 +340,6 @@ func (m Model) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.quitting = true
 		return m, tea.Quit
 	case "ctrl+g":
-		m.focus = "list"
 		m.showHelp = false
 		m.searching = true
 		return m, nil
@@ -421,18 +349,12 @@ func (m Model) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.reload()
 		m.status = "rescanned"
 	case "e":
-		if m.focus == "ports" {
-			return m, nil
-		}
 		if len(items) == 0 {
 			return m, nil
 		}
 		it := items[m.cursor]
 		return m, openProjectEditor(it.Path, it.Name)
 	case " ":
-		if m.focus == "ports" {
-			return m, nil
-		}
 		if len(items) == 0 {
 			return m, nil
 		}
@@ -445,19 +367,6 @@ func (m Model) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return doneMsg{status: fmt.Sprintf("started %s", name), name: name}
 		}
 	case "x":
-		if m.focus == "ports" {
-			if len(running) == 0 {
-				return m, nil
-			}
-			name := running[m.portCur].Name
-			return m, func() tea.Msg {
-				err := m.mgr.Kill(name)
-				if err != nil {
-					return doneMsg{err: err}
-				}
-				return doneMsg{status: fmt.Sprintf("killed %s", name)}
-			}
-		}
 		if len(items) == 0 {
 			return m, nil
 		}
@@ -478,9 +387,6 @@ func (m Model) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return doneMsg{status: "killed all"}
 		}
 	case "o":
-		if m.focus == "ports" {
-			return m, m.openRunningPort()
-		}
 		if len(items) == 0 {
 			return m, nil
 		}
@@ -497,6 +403,22 @@ func (m Model) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				return doneMsg{err: err}
 			}
 			return doneMsg{status: fmt.Sprintf("opened %s", url)}
+		}
+	case "p":
+		if len(items) == 0 {
+			return m, nil
+		}
+		it := items[m.cursor]
+		return m, func() tea.Msg {
+			pinned, err := state.TogglePin(it.Path)
+			if err != nil {
+				return doneMsg{err: err}
+			}
+			_ = m.mgr.ReloadConfig()
+			if pinned {
+				return doneMsg{status: fmt.Sprintf("pinned %s", it.Name)}
+			}
+			return doneMsg{status: fmt.Sprintf("unpinned %s", it.Name)}
 		}
 	}
 	return m, nil
@@ -535,30 +457,8 @@ func (m Model) confirmOverlay() string {
 	return b.String()
 }
 
-func (m Model) openRunningPort() tea.Cmd {
-	running := m.runningItems()
-	if len(running) == 0 {
-		return nil
-	}
-	it := running[m.portCur]
-	port := it.PrimaryPort()
-	if port <= 0 {
-		return func() tea.Msg {
-			return doneMsg{err: fmt.Errorf("%s has no port", it.Name)}
-		}
-	}
-	url := fmt.Sprintf("http://localhost:%d", port)
-	return func() tea.Msg {
-		if err := openURL(url); err != nil {
-			return doneMsg{err: err}
-		}
-		return doneMsg{status: fmt.Sprintf("opened %s", url)}
-	}
-}
-
-// layoutWidths returns outer panel content width and left/right column widths.
-// outer total includes padding inside border; left+1(divider)+right = content.
-func (m Model) layoutWidths() (outer, left, right int) {
+// contentWidth returns the outer panel width and the inner content width.
+func (m Model) contentWidth() (outer, content int) {
 	w := m.width
 	if w <= 0 {
 		w = maxTotalWidth
@@ -573,37 +473,11 @@ func (m Model) layoutWidths() (outer, left, right int) {
 			outer = 48
 		}
 	}
-	// content width inside border+padding (Width includes padding area in lipgloss)
-	content := outer - 4 // approx for internal calc; actual uses left/right
+	content = outer - 4
 	if content < 40 {
 		content = outer
 	}
-	right = content * 30 / 100
-	if right < minRightWidth {
-		right = minRightWidth
-	}
-	if right > maxRightWidth {
-		right = maxRightWidth
-	}
-	left = content - right - 1 // 1 for vertical divider
-	if left < minLeftWidth {
-		left = minLeftWidth
-		content = left + right + 1
-		outer = content + 4
-		if outer > maxTotalWidth {
-			outer = maxTotalWidth
-			content = outer - 4
-			right = content * 30 / 100
-			if right < minRightWidth {
-				right = minRightWidth
-			}
-			if right > maxRightWidth {
-				right = maxRightWidth
-			}
-			left = content - right - 1
-		}
-	}
-	return outer, left, right
+	return outer, content
 }
 
 // panelHeight is a fixed fraction of the terminal height.
@@ -624,7 +498,7 @@ func (m Model) panelHeight() int {
 
 // chromeLines: title + col headers + top rule + bottom rule + status
 func (m Model) chromeLines() int {
-	return 5
+	return 4
 }
 
 // listRows is the fixed number of rows reserved for the project list.
@@ -668,7 +542,6 @@ func (m *Model) ensureVisible(listRows int) {
 
 func (m Model) renderItem(i int, it session.Item) string {
 	cursor := "  "
-	// white if command exists, gray if not; cursor still yellow when selected
 	nameStyle := normalStyle
 	if !it.Runnable {
 		nameStyle = dimStyle
@@ -683,7 +556,15 @@ func (m Model) renderItem(i int, it session.Item) string {
 	extra := ""
 	if it.Running {
 		mark = runningStyle.Render("●")
-		extra = runningStyle.Render("  running")
+		if len(it.Ports) > 0 {
+			parts := make([]string, len(it.Ports))
+			for j, p := range it.Ports {
+				parts[j] = fmt.Sprintf(":%d", p)
+			}
+			extra = dimStyle.Render("  "+strings.Join(parts, " ")) + runningStyle.Render("  running")
+		} else {
+			extra = runningStyle.Render("  running")
+		}
 	} else if it.Failed {
 		mark = errStyle.Render("✗")
 		extra = errStyle.Render("  failed")
@@ -700,12 +581,10 @@ func (m Model) View() string {
 		return ""
 	}
 
-	outerW, leftW, rightW := m.layoutWidths()
+	outerW, contentW := m.contentWidth()
 	ph := m.panelHeight()
 	listRows := m.listRows()
 	items := m.filtered()
-	running := m.runningItems()
-	div := dimStyle.Render("│")
 
 	activeName := "none"
 	activeExtra := ""
@@ -727,86 +606,62 @@ func (m Model) View() string {
 		}
 	}
 
-	// column headers
-	repoHead := "repositories"
-	portsHead := "ports"
-	if m.focus == "list" {
-		repoHead = cursorStyle.Render(repoHead)
-		portsHead = dimStyle.Render(portsHead)
-	} else {
-		repoHead = dimStyle.Render(repoHead)
-		portsHead = cursorStyle.Render(portsHead)
-	}
-
-	// build left column lines (listRows body)
-	leftLines := make([]string, 0, listRows)
+	// build list body lines
+	bodyLines := make([]string, 0, listRows)
 	if len(m.allItems) == 0 {
-		leftLines = append(leftLines,
+		bodyLines = append(bodyLines,
 			dimStyle.Render("(no projects)"),
 			dimStyle.Render("(add config via e)"),
 		)
 	} else if len(items) == 0 {
-		leftLines = append(leftLines, dimStyle.Render(fmt.Sprintf("(no match for %q)", m.query)))
+		bodyLines = append(bodyLines, dimStyle.Render(fmt.Sprintf("(no match for %q)", m.query)))
 	} else {
 		end := m.offset + listRows
 		if end > len(items) {
 			end = len(items)
 		}
 		for i := m.offset; i < end; i++ {
-			leftLines = append(leftLines, m.renderItem(i, items[i]))
+			if i > 0 && items[i-1].Pinned && !items[i].Pinned {
+				bodyLines = append(bodyLines, dimStyle.Render(strings.Repeat("─", contentW/2)))
+			}
+			bodyLines = append(bodyLines, m.renderItem(i, items[i]))
 		}
 	}
-	for len(leftLines) < listRows {
-		leftLines = append(leftLines, "")
+	for len(bodyLines) < listRows {
+		bodyLines = append(bodyLines, "")
 	}
 
-	// build right column lines
-	rightLines := m.portLines(rightW, listRows)
+	var b strings.Builder
+	b.WriteString(titleStyle.Render("devctl"))
+	b.WriteString("  │  active: ")
+	b.WriteString(statusStyle.Render(activeName))
+	b.WriteString(dimStyle.Render(activeExtra))
+	b.WriteString("\n")
 
-	var body strings.Builder
-	// title row
-	body.WriteString(titleStyle.Render("devctl"))
-	body.WriteString("  │  active: ")
-	body.WriteString(statusStyle.Render(activeName))
-	body.WriteString(dimStyle.Render(activeExtra))
-	body.WriteString("\n")
+	b.WriteString(dimStyle.Render(strings.Repeat("─", contentW)))
+	b.WriteString("\n")
 
-	// section headers with vertical divider
-	body.WriteString(padCell(repoHead, leftW))
-	body.WriteString(div)
-	body.WriteString(padCell(" "+portsHead+dimStyle.Render(fmt.Sprintf(" %d", len(running))), rightW))
-	body.WriteString("\n")
-
-	// separator under headers (with ┼)
-	body.WriteString(dimStyle.Render(strings.Repeat("─", leftW) + "┼" + strings.Repeat("─", rightW)))
-	body.WriteString("\n")
-
-	// body rows
-	for i := 0; i < listRows; i++ {
-		body.WriteString(padCell(leftLines[i], leftW))
-		body.WriteString(div)
-		body.WriteString(padCell(rightLines[i], rightW))
-		body.WriteString("\n")
+	for _, line := range bodyLines {
+		b.WriteString(padCell(line, contentW))
+		b.WriteString("\n")
 	}
 
-	// bottom rule
-	body.WriteString(dimStyle.Render(strings.Repeat("─", leftW) + "┴" + strings.Repeat("─", rightW)))
-	body.WriteString("\n")
+	b.WriteString(dimStyle.Render(strings.Repeat("─", contentW)))
+	b.WriteString("\n")
 
-	// status / search only
 	if m.searching {
-		body.WriteString(searchStyle.Render("/" + m.query + "█"))
-		body.WriteString(dimStyle.Render(fmt.Sprintf("  %d/%d", len(items), len(m.allItems))))
+		b.WriteString(searchStyle.Render("/" + m.query + "█"))
+		b.WriteString(dimStyle.Render(fmt.Sprintf("  %d/%d", len(items), len(m.allItems))))
 	} else if m.query != "" {
-		body.WriteString(searchStyle.Render("/" + m.query))
-		body.WriteString(dimStyle.Render(fmt.Sprintf("  %d/%d", len(items), len(m.allItems))))
+		b.WriteString(searchStyle.Render("/" + m.query))
+		b.WriteString(dimStyle.Render(fmt.Sprintf("  %d/%d", len(items), len(m.allItems))))
 	} else if m.errMsg != "" {
-		body.WriteString(errStyle.Render("error: " + m.errMsg))
+		b.WriteString(errStyle.Render("error: " + m.errMsg))
 	} else if m.status != "" {
-		body.WriteString(statusStyle.Render(m.status))
+		b.WriteString(statusStyle.Render(m.status))
 	}
 
-	panel := panelStyle.Width(outerW).Render(strings.TrimRight(body.String(), "\n"))
+	panel := panelStyle.Width(outerW).Render(strings.TrimRight(b.String(), "\n"))
 	if m.confirmTarget != "" {
 		confirm := panelStyle.Width(44).Render(m.confirmOverlay())
 		panel = lipgloss.JoinVertical(lipgloss.Center, panel, "", confirm)
@@ -828,9 +683,9 @@ func (m Model) View() string {
 func helpText() string {
 	return strings.Join([]string{
 		titleStyle.Render("keys") + dimStyle.Render("  ctrl+p close"),
-		dimStyle.Render("j/k") + " move   " + dimStyle.Render("tab/h/l") + " list/ports",
-		dimStyle.Render("/") + " search   " + dimStyle.Render("ctrl+g") + " search   " + dimStyle.Render("e") + " edit   " + dimStyle.Render("enter/g") + " jump",
-		dimStyle.Render("space") + " start   " + dimStyle.Render("o") + " open   " + dimStyle.Render("x") + " kill",
+		dimStyle.Render("j/k") + " move   " + dimStyle.Render("/") + " search   " + dimStyle.Render("ctrl+g") + " search",
+		dimStyle.Render("e") + " edit   " + dimStyle.Render("enter/g") + " jump   " + dimStyle.Render("space") + " start",
+		dimStyle.Render("o") + " open   " + dimStyle.Render("x") + " kill   " + dimStyle.Render("p") + " pin/unpin",
 		dimStyle.Render("a") + " kill-all   " + dimStyle.Render("r") + " rescan   " + dimStyle.Render("q") + " quit",
 	}, "\n")
 }
@@ -854,54 +709,6 @@ func padCell(s string, width int) string {
 		s += strings.Repeat(" ", width-w)
 	}
 	return s
-}
-
-func (m Model) portLines(width, rows int) []string {
-	running := m.runningItems()
-	lines := make([]string, 0, rows)
-	if len(running) == 0 {
-		lines = append(lines, dimStyle.Render(" (none)"))
-	} else {
-		start := 0
-		if m.portCur >= rows {
-			start = m.portCur - rows + 1
-		}
-		end := start + rows
-		if end > len(running) {
-			end = len(running)
-			start = end - rows
-			if start < 0 {
-				start = 0
-			}
-		}
-		for i := start; i < end; i++ {
-			it := running[i]
-			cur := " "
-			nameStyle := normalStyle
-			if m.focus == "ports" && i == m.portCur {
-				cur = cursorStyle.Render("❯")
-				nameStyle = cursorStyle
-			}
-			ports := ""
-			if len(it.Ports) > 0 {
-				parts := make([]string, len(it.Ports))
-				for j, p := range it.Ports {
-					parts[j] = fmt.Sprintf(":%d", p)
-				}
-				ports = strings.Join(parts, " ")
-			}
-			line := " " + cur + runningStyle.Render("● ") + nameStyle.Render(it.Name)
-			if ports != "" {
-				line += " " + dimStyle.Render(ports)
-			}
-			lines = append(lines, line)
-		}
-	}
-	for len(lines) < rows {
-		lines = append(lines, "")
-	}
-	_ = width
-	return lines
 }
 
 func openURL(url string) error {

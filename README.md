@@ -68,18 +68,18 @@ bind d run-shell 'tmux display-popup -d "#{pane_current_path}" -E -w 100% -h 100
 
 | Key | Action |
 |-----|--------|
-| `j` / `k` | move (list or ports panel) |
-| `Tab` / `l` / `h` | focus ports panel / list |
+| `j` / `k` | move |
 | `Ctrl+P` | toggle key help |
 | `/` | filter by repository name |
-| `Esc` | close help / clear filter / leave ports focus |
+| `Esc` | close help / clear filter |
 | `e` | edit repo config under `~/.config/devctl/projects/` |
-| `Enter` / `g` | print selected project path |
+| `Enter` / `g` | jump to selected project path |
 | `Ctrl+G` | start search |
 | `Space` | start / switch (kills others with ports) |
 | `o` | open primary port in browser |
-| `x` | kill selected (list or ports panel) |
+| `x` | kill selected |
 | `a` | kill all |
+| `p` | pin / unpin selected repository |
 | `r` | rescan repositories |
 | `q` | quit TUI (dev keeps running) |
 
@@ -150,4 +150,10 @@ name = "jal-eap"
 command = "npm run dev --prefix app"
 ports = [3000, 8787]   # first = UI port for `o` and display
 ```
+### Pin repositories
+
+`p` key in TUI toggles a pin on the selected repository. Pinned repositories
+stay at the top of the list. The pin list is stored in
+`~/.local/state/devctl/pins.json`.
+
 State/logs: `~/.local/state/devctl/`
