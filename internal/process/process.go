@@ -2,8 +2,10 @@ package process
 
 import (
 	"fmt"
+	"net"
 	"os"
 	"os/exec"
+	"strconv"
 	"syscall"
 	"time"
 )
@@ -91,31 +93,22 @@ func Kill(pid, pgid int) error {
 	return nil
 }
 
+// PortInUse reports whether port is already bound on this host. It is a
+// pure-Go probe (no "ss"/"lsof" dependency, which is not available on every
+// platform — notably macOS lacks "ss") that attempts a real TCP listen and
+// immediately releases it on success. A server may bind only to the
+// wildcard address or only to loopback, so both are probed to catch either
+// case; if either bind fails, the port is considered in use.
 func PortInUse(port int) (bool, error) {
 	if port <= 0 {
 		return false, nil
 	}
-	out, err := exec.Command("ss", "-ltn").Output()
-	if err != nil {
-		return false, nil
+	for _, host := range []string{"", "127.0.0.1"} {
+		ln, err := net.Listen("tcp", net.JoinHostPort(host, strconv.Itoa(port)))
+		if err != nil {
+			return true, nil
+		}
+		_ = ln.Close()
 	}
-	return containsPort(string(out), port), nil
-}
-
-func containsPort(ssOut string, port int) bool {
-	target := fmt.Sprintf(":%d", port)
-	for i := 0; i+len(target) <= len(ssOut); i++ {
-		if ssOut[i:i+len(target)] != target {
-			continue
-		}
-		end := i + len(target)
-		if end == len(ssOut) {
-			return true
-		}
-		c := ssOut[end]
-		if c < '0' || c > '9' {
-			return true
-		}
-	}
-	return false
+	return false, nil
 }

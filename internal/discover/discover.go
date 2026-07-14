@@ -189,11 +189,25 @@ func addRepoRoot(root string, byPath map[string]Project, source string) {
 		return
 	}
 
-	name := filepath.Base(root)
-	cmd := ""
-	var ports []int
-	runnable := false
+	name, cmd, ports, runnable := resolveProjectFile(root)
 
+	byPath[root] = Project{
+		Name:     name,
+		Path:     root,
+		Command:  cmd,
+		Ports:    ports,
+		Source:   source,
+		Runnable: runnable,
+	}
+}
+
+// resolveProjectFile reads the per-repo config file (<repo>/.devctl.toml or
+// ~/.config/devctl/projects/<slug>.toml) for root and returns the settings
+// that should apply. If no config file exists, it returns the "unconfigured"
+// defaults: no command, no ports, not runnable, name defaulting to the repo
+// directory's basename.
+func resolveProjectFile(root string) (name, cmd string, ports []int, runnable bool) {
+	name = filepath.Base(root)
 	if pf, err := config.LoadProjectFile(root); err == nil {
 		if pf.Name != "" {
 			name = pf.Name
@@ -204,15 +218,26 @@ func addRepoRoot(root string, byPath map[string]Project, source string) {
 		}
 		ports = pf.AllPorts()
 	}
+	return name, cmd, ports, runnable
+}
 
-	byPath[root] = Project{
-		Name:     name,
-		Path:     root,
-		Command:  cmd,
-		Ports:    ports,
-		Source:   source,
-		Runnable: runnable,
+// Refresh re-resolves name/command/ports/runnable for scan-derived projects
+// from their per-repo config files. The discovered-projects cache only
+// stores the result of the expensive directory walk (repo paths); settings
+// are "config", not "scan" data, so they must be re-read on every load. This
+// keeps edits to .devctl.toml (via the `e` key or an external editor) in
+// effect on the next reload without forcing a full Rescan.
+func Refresh(scanned []Project) []Project {
+	out := make([]Project, len(scanned))
+	for i, p := range scanned {
+		name, cmd, ports, runnable := resolveProjectFile(p.Path)
+		p.Name = name
+		p.Command = cmd
+		p.Ports = ports
+		p.Runnable = runnable
+		out[i] = p
 	}
+	return out
 }
 
 func skipDir(root, name string) bool {

@@ -50,7 +50,7 @@ func New() (*Manager, error) {
 		if err != nil {
 			return nil, err
 		}
-		mgr.projects = discover.Merge(cfg, scanned)
+		mgr.projects = discover.Merge(cfg, discover.Refresh(scanned))
 		return mgr, nil
 	}
 	if err := mgr.Rescan(); err != nil {
@@ -68,7 +68,7 @@ func (m *Manager) ReloadConfig() error {
 	m.cfg = cfg
 	scanned, loadErr := state.LoadDiscoveredProjects()
 	if loadErr == nil {
-		m.projects = discover.Merge(cfg, scanned)
+		m.projects = discover.Merge(cfg, discover.Refresh(scanned))
 	}
 	m.mu.Unlock()
 	return nil
