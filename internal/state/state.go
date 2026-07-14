@@ -10,17 +10,18 @@ import (
 )
 
 type Entry struct {
-	Name       string     `json:"name"`
-	PID        int        `json:"pid"`
-	PGID       int        `json:"pgid"`
-	Port       int        `json:"port"` // legacy first port
-	Ports      []int      `json:"ports,omitempty"`
-	Cwd        string     `json:"cwd"`
-	Command    string     `json:"command"`
-	StartedAt  time.Time  `json:"started_at"`
-	FinishedAt *time.Time `json:"finished_at,omitempty"`
-	ExitCode   *int       `json:"exit_code,omitempty"`
-	LogPath    string     `json:"log_path"`
+	Name         string     `json:"name"`
+	PID          int        `json:"pid"`
+	PGID         int        `json:"pgid"`
+	Port         int        `json:"port"` // legacy first port
+	Ports        []int      `json:"ports,omitempty"`
+	Cwd          string     `json:"cwd"`
+	Command      string     `json:"command"`
+	StartedAt    time.Time  `json:"started_at"`
+	FinishedAt   *time.Time `json:"finished_at,omitempty"`
+	ExitCode     *int       `json:"exit_code,omitempty"`
+	LogPath      string     `json:"log_path"`
+	PortsReadyAt *time.Time `json:"ports_ready_at,omitempty"`
 }
 
 // DoneTTL is how long a finished process stays visible as "Done".

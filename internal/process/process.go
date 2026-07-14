@@ -1,11 +1,14 @@
 package process
 
 import (
+	"bufio"
 	"fmt"
 	"net"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 )
@@ -111,4 +114,141 @@ func PortInUse(port int) (bool, error) {
 		_ = ln.Close()
 	}
 	return false, nil
+}
+
+func FindListeners(port int) ([]int, error) {
+	inodes, err := listenInodes(port)
+	if err != nil {
+		return nil, err
+	}
+	if len(inodes) == 0 {
+		return nil, nil
+	}
+	return pidsByInodes(inodes)
+}
+
+func listenInodes(port int) (map[string]struct{}, error) {
+	hexPort := fmt.Sprintf("%04X", port)
+	inodes := map[string]struct{}{}
+	for _, f := range []string{"/proc/net/tcp", "/proc/net/tcp6"} {
+		file, err := os.Open(f)
+		if err != nil {
+			continue
+		}
+		scanner := bufio.NewScanner(file)
+		scanner.Scan() // skip header
+		for scanner.Scan() {
+			line := scanner.Text()
+			fields := strings.Fields(line)
+			if len(fields) < 4 {
+				continue
+			}
+			local := fields[1]
+			state := fields[3]
+			if state != "0A" {
+				continue
+			}
+			src := strings.Split(local, ":")
+			if len(src) != 2 {
+				continue
+			}
+			if src[1] != hexPort {
+				continue
+			}
+			if len(fields) >= 10 {
+				inodes[fields[9]] = struct{}{}
+			}
+		}
+		file.Close()
+	}
+	return inodes, nil
+}
+
+func pidsByInodes(inodes map[string]struct{}) ([]int, error) {
+	var pids []int
+	entries, err := os.ReadDir("/proc")
+	if err != nil {
+		return nil, err
+	}
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		pid, err := strconv.Atoi(entry.Name())
+		if err != nil {
+			continue
+		}
+		fdDir := filepath.Join("/proc", entry.Name(), "fd")
+		fds, err := os.ReadDir(fdDir)
+		if err != nil {
+			continue
+		}
+		found := false
+		for _, fd := range fds {
+			link, err := os.Readlink(filepath.Join(fdDir, fd.Name()))
+			if err != nil {
+				continue
+			}
+			for ino := range inodes {
+				if strings.Contains(link, "socket:["+ino+"]") {
+					pids = append(pids, pid)
+					found = true
+					break
+				}
+			}
+			if found {
+				break
+			}
+		}
+	}
+	return pids, nil
+}
+
+func KillPIDs(pids []int) error {
+	mine := os.Getpid()
+	var firstErr error
+	for _, pid := range pids {
+		if pid <= 0 || pid == 1 || pid == mine {
+			continue
+		}
+		p, err := os.FindProcess(pid)
+		if err != nil {
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
+		}
+		_ = p.Signal(syscall.SIGTERM)
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		allDead := true
+		for _, pid := range pids {
+			if Alive(pid) {
+				allDead = false
+				break
+			}
+		}
+		if allDead {
+			return nil
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	for _, pid := range pids {
+		if pid <= 0 || pid == 1 || pid == mine {
+			continue
+		}
+		p, err := os.FindProcess(pid)
+		if err != nil {
+			continue
+		}
+		_ = p.Signal(syscall.SIGKILL)
+	}
+	time.Sleep(100 * time.Millisecond)
+	for _, pid := range pids {
+		if Alive(pid) {
+			return fmt.Errorf("failed to kill pid %d", pid)
+		}
+	}
+	return firstErr
 }

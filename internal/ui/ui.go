@@ -15,6 +15,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/mame77/devctl/internal/config"
 	"github.com/mame77/devctl/internal/jump"
+	"github.com/mame77/devctl/internal/process"
 	"github.com/mame77/devctl/internal/session"
 	"github.com/mame77/devctl/internal/state"
 )
@@ -62,6 +63,9 @@ type Model struct {
 
 	confirmTarget    string
 	confirmConflicts []session.PortConflict
+
+	killedUntil map[string]time.Time
+	killedPos   map[string]int
 }
 
 func New(mgr *session.Manager) Model {
@@ -87,6 +91,25 @@ func (m *Model) reload() {
 		selected = filtered[m.cursor].Name
 	}
 	m.allItems = items
+	now := time.Now()
+	for name, until := range m.killedUntil {
+		if now.After(until) {
+			delete(m.killedUntil, name)
+			delete(m.killedPos, name)
+		}
+	}
+	for name, pos := range m.killedPos {
+		for i, it := range m.allItems {
+			if it.Name == name {
+				m.allItems = append(m.allItems[:i], m.allItems[i+1:]...)
+				if pos > len(m.allItems) {
+					pos = len(m.allItems)
+				}
+				m.allItems = append(m.allItems[:pos], append([]session.Item{it}, m.allItems[pos:]...)...)
+				break
+			}
+		}
+	}
 	// do not clear errMsg/status here — tick reloads must not hide feedback
 	m.cursor = 0
 	if selected != "" {
@@ -210,7 +233,23 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.errMsg = ""
 			m.status = msg.status
 		}
-		if strings.HasPrefix(msg.status, "killed ") || strings.HasPrefix(msg.status, "unpinned ") {
+		if strings.HasPrefix(msg.status, "killed ") {
+			name := strings.TrimPrefix(msg.status, "killed ")
+			if m.killedUntil == nil {
+				m.killedUntil = make(map[string]time.Time)
+				m.killedPos = make(map[string]int)
+			}
+			m.killedUntil[name] = time.Now().Add(time.Second)
+			for i, it := range m.allItems {
+				if it.Name == name {
+					m.killedPos[name] = i
+					break
+				}
+			}
+			keep := m.cursor
+			m.reload()
+			m.cursor = keep
+		} else if strings.HasPrefix(msg.status, "unpinned ") {
 			keep := m.cursor
 			m.reload()
 			m.cursor = keep
@@ -564,11 +603,9 @@ func (m Model) renderItem(i int, it session.Item) string {
 	mark := " "
 	isCursor := i == m.cursor
 	nameStyle := normalStyle
-	portStyle := dimStyle
 	if isCursor {
 		cursor = cursorStyle.Render("❯ ")
 		nameStyle = cursorStyle
-		portStyle = normalStyle
 	}
 
 	portStr := ""
@@ -580,33 +617,45 @@ func (m Model) renderItem(i int, it session.Item) string {
 		portStr = " " + strings.Join(parts, " ")
 	}
 
-	if it.Running {
+	isKilled := m.killedUntil != nil && time.Now().Before(m.killedUntil[it.Name])
+
+	if isKilled {
+		mark = "●"
+	} else if it.Done {
+		mark = "✓"
+	} else if it.Running {
 		mark = "●"
 	} else if it.Pinned {
 		mark = "●"
 	} else if it.Failed {
 		mark = "✗"
-	} else if it.Done {
-		mark = "✓"
 	}
 
-	if it.Running {
+	if isKilled {
+		mark = errStyle.Render(mark)
+	} else if it.Done {
+		mark = statusStyle.Render(mark)
+	} else if it.Running {
 		mark = runningStyle.Render(mark)
 	} else if it.Pinned {
 		mark = pinnedStyle.Render(mark)
 	} else if it.Failed {
 		mark = errStyle.Render(mark)
-	} else if it.Done {
-		mark = statusStyle.Render(mark)
 	}
 
 	extra := ""
-	if it.Failed {
-		extra = errStyle.Render("  failed") + portStyle.Render(portStr)
+	if isKilled {
+		extra = errStyle.Render("  killed") + nameStyle.Render(portStr)
 	} else if it.Done {
-		extra = statusStyle.Render("  Done") + portStyle.Render(portStr)
+		extra = statusStyle.Render("  Done") + nameStyle.Render(portStr)
+	} else if it.Running && it.PortsReadyAt != nil {
+		extra = nameStyle.Render(portStr)
+	} else if it.Running {
+		extra = runningStyle.Render("  running") + nameStyle.Render(portStr)
+	} else if it.Failed {
+		extra = errStyle.Render("  failed") + nameStyle.Render(portStr)
 	} else {
-		extra = portStyle.Render(portStr)
+		extra = nameStyle.Render(portStr)
 	}
 
 	name := nameStyle.Render(it.Name)
@@ -715,10 +764,15 @@ func activePortSummary(items []session.Item) string {
 			continue
 		}
 		for _, p := range it.Ports {
-			if !seen[p] {
-				seen[p] = true
-				ports = append(ports, p)
+			if seen[p] {
+				continue
 			}
+			inUse, _ := process.PortInUse(p)
+			if !inUse {
+				continue
+			}
+			seen[p] = true
+			ports = append(ports, p)
 		}
 	}
 	if len(ports) == 0 {
