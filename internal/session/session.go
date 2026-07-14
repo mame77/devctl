@@ -3,6 +3,7 @@ package session
 import (
 	"fmt"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -31,6 +32,23 @@ func (it Item) PrimaryPort() int {
 		return it.Ports[0]
 	}
 	return 0
+}
+
+type PortConflict struct {
+	Port int
+	Name string
+}
+
+type PortConflictError struct {
+	Conflicts []PortConflict
+}
+
+func (e *PortConflictError) Error() string {
+	parts := make([]string, len(e.Conflicts))
+	for i, c := range e.Conflicts {
+		parts[i] = fmt.Sprintf(":%d (%s)", c.Port, c.Name)
+	}
+	return "port conflict: " + strings.Join(parts, ", ")
 }
 
 type Manager struct {
@@ -231,8 +249,12 @@ func (m *Manager) StartSwitch(name string) error {
 
 	// port-based projects own the exclusive "dev server" slot
 	if len(target.Ports) > 0 {
-		if err := m.KillAll(); err != nil {
-			return fmt.Errorf("kill existing: %w", err)
+		conflicts, err := m.findConflicts(target.Ports, name)
+		if err != nil {
+			return err
+		}
+		if len(conflicts) > 0 {
+			return &PortConflictError{Conflicts: conflicts}
 		}
 		for _, port := range target.Ports {
 			inUse, _ := process.PortInUse(port)
@@ -241,10 +263,79 @@ func (m *Manager) StartSwitch(name string) error {
 			}
 		}
 	} else {
-		// one-shot / no-port (e.g. go install): do not kill running servers
 		_ = state.Remove(target.Name)
 	}
 
+	return m.startProcess(target)
+}
+
+func (m *Manager) StartSwitchForce(name string) error {
+	items, err := m.List()
+	if err != nil {
+		return err
+	}
+	var target *Item
+	for i := range items {
+		if items[i].Name == name {
+			target = &items[i]
+			break
+		}
+	}
+	if target == nil {
+		return fmt.Errorf("project not found: %s", name)
+	}
+	if !target.Runnable || target.Command == "" {
+		return fmt.Errorf("%s has no command (set command in .devctl.toml or config)", name)
+	}
+	if target.Running {
+		return nil
+	}
+
+	if len(target.Ports) > 0 {
+		conflicts, err := m.findConflicts(target.Ports, name)
+		if err != nil {
+			return err
+		}
+		for _, c := range conflicts {
+			if e, loadErr := state.Load(c.Name); loadErr == nil {
+				_ = process.Kill(e.PID, e.PGID)
+			}
+			_ = state.Remove(c.Name)
+		}
+		for _, port := range target.Ports {
+			inUse, _ := process.PortInUse(port)
+			if inUse {
+				return fmt.Errorf("port %d already in use (not managed by devctl)", port)
+			}
+		}
+	}
+
+	return m.startProcess(target)
+}
+
+func (m *Manager) findConflicts(targetPorts []int, excludeName string) ([]PortConflict, error) {
+	entries, err := state.List()
+	if err != nil {
+		return nil, err
+	}
+	var conflicts []PortConflict
+	for _, e := range entries {
+		if e.Name == excludeName || !process.Alive(e.PID) {
+			continue
+		}
+		runningPorts := config.NormalizePorts(e.Ports, e.Port)
+		for _, tp := range targetPorts {
+			for _, rp := range runningPorts {
+				if tp == rp {
+					conflicts = append(conflicts, PortConflict{Port: tp, Name: e.Name})
+				}
+			}
+		}
+	}
+	return conflicts, nil
+}
+
+func (m *Manager) startProcess(target *Item) error {
 	logPath, err := state.LogPath(target.Name)
 	if err != nil {
 		return err
@@ -256,7 +347,6 @@ func (m *Manager) StartSwitch(name string) error {
 		if err != nil {
 			return
 		}
-		// only update if still the same pid
 		if e.PID != startedPID {
 			return
 		}

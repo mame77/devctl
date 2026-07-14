@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -33,12 +34,13 @@ var (
 	cursorStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("11")).Bold(true)
 	runningStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("10")).Bold(true)
 	// repository names stay white
-	normalStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("15"))
-	errStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("9"))
-	statusStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("14"))
-	dimStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
-	searchStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("14")).Bold(true)
-	panelStyle  = lipgloss.NewStyle().
+	normalStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("15"))
+	errStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("9"))
+	statusStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("14"))
+	dimStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
+	searchStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("14")).Bold(true)
+	confirmStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("11")).Bold(true)
+	panelStyle   = lipgloss.NewStyle().
 			Border(lipgloss.RoundedBorder()).
 			BorderForeground(lipgloss.Color("15")).
 			Padding(0, 1)
@@ -60,6 +62,9 @@ type Model struct {
 	height    int
 	quitting  bool
 	jumpPath  string
+
+	confirmTarget    string
+	confirmConflicts []session.PortConflict
 }
 
 func New(mgr *session.Manager) Model {
@@ -200,6 +205,7 @@ func tickCmd() tea.Cmd {
 type doneMsg struct {
 	err    error
 	status string
+	name   string
 }
 
 type editorDoneMsg struct {
@@ -221,6 +227,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case doneMsg:
 		if msg.err != nil {
+			var pce *session.PortConflictError
+			if errors.As(msg.err, &pce) {
+				m.confirmTarget = msg.name
+				m.confirmConflicts = pce.Conflicts
+				return m, nil
+			}
 			m.errMsg = msg.err.Error()
 		} else {
 			m.errMsg = ""
@@ -310,6 +322,10 @@ func (m Model) updateSearch(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if m.confirmTarget != "" {
+		return m.updateConfirm(msg)
+	}
+
 	items := m.filtered()
 	running := m.runningItems()
 
@@ -424,9 +440,9 @@ func (m Model) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, func() tea.Msg {
 			err := m.mgr.StartSwitch(name)
 			if err != nil {
-				return doneMsg{err: err}
+				return doneMsg{err: err, name: name}
 			}
-			return doneMsg{status: fmt.Sprintf("started %s", name)}
+			return doneMsg{status: fmt.Sprintf("started %s", name), name: name}
 		}
 	case "x":
 		if m.focus == "ports" {
@@ -484,6 +500,39 @@ func (m Model) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	}
 	return m, nil
+}
+
+func (m Model) updateConfirm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "y", "Y":
+		name := m.confirmTarget
+		m.confirmTarget = ""
+		m.confirmConflicts = nil
+		return m, func() tea.Msg {
+			err := m.mgr.StartSwitchForce(name)
+			if err != nil {
+				return doneMsg{err: err}
+			}
+			return doneMsg{status: fmt.Sprintf("started %s", name)}
+		}
+	case "n", "N", "esc", "ctrl+c":
+		m.confirmTarget = ""
+		m.confirmConflicts = nil
+		return m, nil
+	}
+	return m, nil
+}
+
+func (m Model) confirmOverlay() string {
+	var b strings.Builder
+	b.WriteString(confirmStyle.Render("Start anyway?"))
+	b.WriteString("\n\n")
+	for _, c := range m.confirmConflicts {
+		b.WriteString(fmt.Sprintf("  :%d %s %s\n", c.Port, dimStyle.Render("("+c.Name+")"), errStyle.Render("in use")))
+	}
+	b.WriteString("\n")
+	b.WriteString(dimStyle.Render("  [y/N]"))
+	return b.String()
 }
 
 func (m Model) openRunningPort() tea.Cmd {
@@ -758,7 +807,10 @@ func (m Model) View() string {
 	}
 
 	panel := panelStyle.Width(outerW).Render(strings.TrimRight(body.String(), "\n"))
-	if m.showHelp {
+	if m.confirmTarget != "" {
+		confirm := panelStyle.Width(44).Render(m.confirmOverlay())
+		panel = lipgloss.JoinVertical(lipgloss.Center, panel, "", confirm)
+	} else if m.showHelp {
 		help := panelStyle.Width(outerW).Render(helpText())
 		panel = lipgloss.JoinVertical(lipgloss.Left, panel, "", help)
 	}
