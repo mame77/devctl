@@ -162,7 +162,36 @@ func (m *Manager) List() ([]Item, error) {
 		}
 		items = append(items, it)
 	}
+	sortItems(items)
 	return items, nil
+}
+
+func sortItems(items []Item) {
+	running := make([]Item, 0)
+	pinned := make([]Item, 0)
+	rest := make([]Item, 0)
+	for _, it := range items {
+		if it.Running {
+			running = append(running, it)
+		} else if it.Pinned {
+			pinned = append(pinned, it)
+		} else {
+			rest = append(rest, it)
+		}
+	}
+	idx := 0
+	for i := range running {
+		items[idx] = running[i]
+		idx++
+	}
+	for i := range pinned {
+		items[idx] = pinned[i]
+		idx++
+	}
+	for i := range rest {
+		items[idx] = rest[i]
+		idx++
+	}
 }
 
 func (m *Manager) Active() (*Item, error) {

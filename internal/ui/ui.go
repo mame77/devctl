@@ -29,10 +29,11 @@ const (
 var (
 	titleStyle   = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("12"))
 	helpStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
-	cursorStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("11")).Bold(true)
+	cursorStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("12")).Bold(true)
 	runningStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("10")).Bold(true)
 	// repository names stay white
 	normalStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("15"))
+	pinnedStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("3")).Bold(true)
 	errStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("9"))
 	statusStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("14"))
 	dimStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
@@ -209,7 +210,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.errMsg = ""
 			m.status = msg.status
 		}
-		m.reload()
+		if strings.HasPrefix(msg.status, "killed ") || strings.HasPrefix(msg.status, "unpinned ") {
+			keep := m.cursor
+			m.reload()
+			m.cursor = keep
+		} else {
+			m.reload()
+		}
+		m.clampCursor()
+		m.ensureVisible(m.listRows())
 		return m, nil
 
 	case editorDoneMsg:
@@ -358,7 +367,17 @@ func (m Model) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if len(items) == 0 {
 			return m, nil
 		}
-		name := items[m.cursor].Name
+		it := items[m.cursor]
+		if it.Running {
+			return m, func() tea.Msg {
+				err := m.mgr.Kill(it.Name)
+				if err != nil {
+					return doneMsg{err: err}
+				}
+				return doneMsg{status: fmt.Sprintf("killed %s", it.Name)}
+			}
+		}
+		name := it.Name
 		return m, func() tea.Msg {
 			err := m.mgr.StartSwitch(name)
 			if err != nil {
@@ -542,37 +561,55 @@ func (m *Model) ensureVisible(listRows int) {
 
 func (m Model) renderItem(i int, it session.Item) string {
 	cursor := "  "
+	mark := " "
+	isCursor := i == m.cursor
 	nameStyle := normalStyle
-	if !it.Runnable {
-		nameStyle = dimStyle
-	}
-	if i == m.cursor {
+	portStyle := dimStyle
+	if isCursor {
 		cursor = cursorStyle.Render("❯ ")
 		nameStyle = cursorStyle
+		portStyle = normalStyle
 	}
 
-	mark := " "
-	name := nameStyle.Render(it.Name)
-	extra := ""
-	if it.Running {
-		mark = runningStyle.Render("●")
-		if len(it.Ports) > 0 {
-			parts := make([]string, len(it.Ports))
-			for j, p := range it.Ports {
-				parts[j] = fmt.Sprintf(":%d", p)
-			}
-			extra = dimStyle.Render("  "+strings.Join(parts, " ")) + runningStyle.Render("  running")
-		} else {
-			extra = runningStyle.Render("  running")
+	portStr := ""
+	if len(it.Ports) > 0 {
+		parts := make([]string, len(it.Ports))
+		for j, p := range it.Ports {
+			parts[j] = fmt.Sprintf(":%d", p)
 		}
-	} else if it.Failed {
-		mark = errStyle.Render("✗")
-		extra = errStyle.Render("  failed")
-	} else if it.Done {
-		mark = statusStyle.Render("✓")
-		extra = statusStyle.Render("  Done")
+		portStr = " " + strings.Join(parts, " ")
 	}
 
+	if it.Running {
+		mark = "●"
+	} else if it.Pinned {
+		mark = "●"
+	} else if it.Failed {
+		mark = "✗"
+	} else if it.Done {
+		mark = "✓"
+	}
+
+	if it.Running {
+		mark = runningStyle.Render(mark)
+	} else if it.Pinned {
+		mark = pinnedStyle.Render(mark)
+	} else if it.Failed {
+		mark = errStyle.Render(mark)
+	} else if it.Done {
+		mark = statusStyle.Render(mark)
+	}
+
+	extra := ""
+	if it.Failed {
+		extra = errStyle.Render("  failed") + portStyle.Render(portStr)
+	} else if it.Done {
+		extra = statusStyle.Render("  Done") + portStyle.Render(portStr)
+	} else {
+		extra = portStyle.Render(portStr)
+	}
+
+	name := nameStyle.Render(it.Name)
 	return fmt.Sprintf("%s%s %s%s", cursor, mark, name, extra)
 }
 
@@ -585,26 +622,6 @@ func (m Model) View() string {
 	ph := m.panelHeight()
 	listRows := m.listRows()
 	items := m.filtered()
-
-	activeName := "none"
-	activeExtra := ""
-	for _, it := range m.allItems {
-		if it.Running {
-			activeName = it.Name
-			if len(it.Ports) > 0 {
-				parts := make([]string, len(it.Ports))
-				for i, p := range it.Ports {
-					parts[i] = fmt.Sprintf("%d", p)
-				}
-				activeExtra = "  :" + strings.Join(parts, " :")
-			}
-			break
-		}
-		if it.Done && activeName == "none" {
-			activeName = it.Name
-			activeExtra = " Done"
-		}
-	}
 
 	// build list body lines
 	bodyLines := make([]string, 0, listRows)
@@ -621,9 +638,6 @@ func (m Model) View() string {
 			end = len(items)
 		}
 		for i := m.offset; i < end; i++ {
-			if i > 0 && items[i-1].Pinned && !items[i].Pinned {
-				bodyLines = append(bodyLines, dimStyle.Render(strings.Repeat("─", contentW/2)))
-			}
 			bodyLines = append(bodyLines, m.renderItem(i, items[i]))
 		}
 	}
@@ -633,9 +647,11 @@ func (m Model) View() string {
 
 	var b strings.Builder
 	b.WriteString(titleStyle.Render("devctl"))
-	b.WriteString("  │  active: ")
-	b.WriteString(statusStyle.Render(activeName))
-	b.WriteString(dimStyle.Render(activeExtra))
+	activePorts := activePortSummary(m.allItems)
+	if activePorts != "" {
+		b.WriteString("  │ ")
+		b.WriteString(normalStyle.Render(activePorts))
+	}
 	b.WriteString("\n")
 
 	b.WriteString(dimStyle.Render(strings.Repeat("─", contentW)))
@@ -684,13 +700,37 @@ func helpText() string {
 	return strings.Join([]string{
 		titleStyle.Render("keys") + dimStyle.Render("  ctrl+p close"),
 		dimStyle.Render("j/k") + " move   " + dimStyle.Render("/") + " search   " + dimStyle.Render("ctrl+g") + " search",
-		dimStyle.Render("e") + " edit   " + dimStyle.Render("enter/g") + " jump   " + dimStyle.Render("space") + " start",
+		dimStyle.Render("e") + " edit   " + dimStyle.Render("enter/g") + " jump   " + dimStyle.Render("space") + " start/kill",
 		dimStyle.Render("o") + " open   " + dimStyle.Render("x") + " kill   " + dimStyle.Render("p") + " pin/unpin",
 		dimStyle.Render("a") + " kill-all   " + dimStyle.Render("r") + " rescan   " + dimStyle.Render("q") + " quit",
 	}, "\n")
 }
 
 // padCell left-aligns s into width cells (ANSI-aware via lipgloss.Width).
+func activePortSummary(items []session.Item) string {
+	seen := map[int]bool{}
+	var ports []int
+	for _, it := range items {
+		if !it.Running {
+			continue
+		}
+		for _, p := range it.Ports {
+			if !seen[p] {
+				seen[p] = true
+				ports = append(ports, p)
+			}
+		}
+	}
+	if len(ports) == 0 {
+		return ""
+	}
+	parts := make([]string, len(ports))
+	for i, p := range ports {
+		parts[i] = fmt.Sprintf(":%d", p)
+	}
+	return strings.Join(parts, " ")
+}
+
 func padCell(s string, width int) string {
 	if width <= 0 {
 		return s

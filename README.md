@@ -75,7 +75,7 @@ bind d run-shell 'tmux display-popup -d "#{pane_current_path}" -E -w 100% -h 100
 | `e` | edit repo config under `~/.config/devctl/projects/` |
 | `Enter` / `g` | jump to selected project path |
 | `Ctrl+G` | start search |
-| `Space` | start / switch (kills others with ports) |
+| `Space` | start / kill toggle |
 | `o` | open primary port in browser |
 | `x` | kill selected |
 | `a` | kill all |
