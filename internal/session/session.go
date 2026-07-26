@@ -3,6 +3,7 @@ package session
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -19,14 +20,15 @@ type Item struct {
 	Command      string
 	Ports        []int
 	Running      bool
-	Done         bool // one-shot finished OK / ports ready (transient)
-	Failed       bool // process exited unexpectedly / non-zero
+	Done         bool
+	Failed       bool
 	PID          int
 	PGID         int
 	Source       string
 	Runnable     bool
 	Pinned       bool
 	PortsReadyAt *time.Time
+	Icon         string
 }
 
 func (it Item) PrimaryPort() int {
@@ -146,6 +148,7 @@ func (m *Manager) List() ([]Item, error) {
 			Source:   p.Source,
 			Runnable: p.Runnable,
 			Pinned:   p.Pinned,
+			Icon:     detectIcon(p.Path),
 		}
 		if e, ok := statusByName[p.Name]; ok {
 			it.PID = e.PID
@@ -504,4 +507,48 @@ func mergeWithPins(cfg config.Config, scanned []discover.Project) []discover.Pro
 	merged := discover.Merge(cfg, scanned)
 	pins, _ := state.LoadPins()
 	return discover.ApplyPins(merged, pins)
+}
+
+var iconMatchers = []struct {
+	file string
+	icon string
+}{
+	{"go.mod", "🐹"},
+	{"Cargo.toml", "🦀"},
+	{"package.json", "📦"},
+	{"yarn.lock", "📦"},
+	{"pnpm-lock.yaml", "📦"},
+	{"pyproject.toml", "🐍"},
+	{"setup.py", "🐍"},
+	{"Pipfile", "🐍"},
+	{"requirements.txt", "🐍"},
+	{"Gemfile", "💎"},
+	{"Rakefile", "💎"},
+	{"mix.exs", "💜"},
+	{"CMakeLists.txt", "🏗️"},
+	{"Makefile", "🔧"},
+	{"Dockerfile", "🐳"},
+	{"docker-compose.yml", "🐳"},
+	{"composer.json", "🐘"},
+	{"build.gradle", "🐘"},
+	{"pom.xml", "🐘"},
+	{"tsconfig.json", "📘"},
+	{"tailwind.config.js", "🎨"},
+	{"rust-toolchain.toml", "🦀"},
+	{"Cargo.lock", "🦀"},
+	{"deno.json", "🦕"},
+	{"svelte.config.js", "🧡"},
+	{"next.config.js", "▲"},
+	{"nuxt.config.ts", "💚"},
+	{"astro.config.mjs", "🚀"},
+}
+
+func detectIcon(path string) string {
+	for _, m := range iconMatchers {
+		if _, err := os.Stat(filepath.Join(path, m.file)); err == nil {
+			return m.icon
+		}
+	}
+	// fallback: try .devctl.toml for a project-specific icon (future)
+	return "📁"
 }

@@ -25,6 +25,7 @@ const (
 	minPanelHeight = 10
 	minListRows    = 3
 	maxTotalWidth  = 78 // keep UI compact and centered
+	tileWidth      = 24
 )
 
 var (
@@ -71,6 +72,9 @@ type Model struct {
 	logName  string
 	logLines []string
 	logOff   int
+
+	showFavorites bool
+	favCursor     int
 }
 
 const logViewLines = 20
@@ -132,6 +136,7 @@ func (m *Model) reload() {
 	}
 	m.clampCursor()
 	m.ensureVisible(m.listRows())
+	m.clampFavCursor()
 }
 
 func (m *Model) refreshLog() {
@@ -230,6 +235,24 @@ func (m Model) filtered() []session.Item {
 	return out
 }
 
+func (m Model) pinnedItems() []session.Item {
+	out := make([]session.Item, 0)
+	for _, it := range m.allItems {
+		if it.Pinned {
+			out = append(out, it)
+		}
+	}
+	return out
+}
+
+func (m Model) favGridCols(contentW int) int {
+	cols := contentW / tileWidth
+	if cols < 1 {
+		cols = 1
+	}
+	return cols
+}
+
 func (m *Model) clampCursor() {
 	n := len(m.filtered())
 	if n == 0 {
@@ -242,6 +265,21 @@ func (m *Model) clampCursor() {
 	}
 	if m.cursor < 0 {
 		m.cursor = 0
+	}
+}
+
+func (m *Model) clampFavCursor() {
+	items := m.pinnedItems()
+	n := len(items)
+	if n == 0 {
+		m.favCursor = 0
+		return
+	}
+	if m.favCursor >= n {
+		m.favCursor = n - 1
+	}
+	if m.favCursor < 0 {
+		m.favCursor = 0
 	}
 }
 
@@ -409,11 +447,14 @@ func (m Model) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.logLines = nil
 			return m, nil
 		}
-		// don't block navigation in log mode
 	}
 
 	if m.confirmTarget != "" {
 		return m.updateConfirm(msg)
+	}
+
+	if m.showFavorites {
+		return m.updateFavorites(msg)
 	}
 
 	items := m.filtered()
@@ -422,6 +463,24 @@ func (m Model) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "q", "ctrl+c":
 		m.quitting = true
 		return m, tea.Quit
+	case "f":
+		m.showFavorites = true
+		m.showHelp = false
+		m.showLog = false
+		m.logLines = nil
+		m.favCursor = 0
+		pinned := m.pinnedItems()
+		filtered := m.filtered()
+		if m.cursor < len(filtered) {
+			name := filtered[m.cursor].Name
+			for i, it := range pinned {
+				if it.Name == name {
+					m.favCursor = i
+					break
+				}
+			}
+		}
+		return m, nil
 	case "ctrl+p":
 		m.showHelp = !m.showHelp
 		return m, nil
@@ -589,6 +648,178 @@ func (m Model) updateConfirm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+func (m Model) updateFavorites(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	items := m.pinnedItems()
+
+	switch msg.String() {
+	case "q", "ctrl+c":
+		m.quitting = true
+		return m, tea.Quit
+	case "f", "esc":
+		m.showFavorites = false
+		return m, nil
+	case "/":
+		m.showFavorites = false
+		m.searching = true
+		return m, nil
+	case "ctrl+p":
+		m.showHelp = !m.showHelp
+		return m, nil
+	case "r":
+		_ = m.mgr.ReloadConfig()
+		_ = m.mgr.Rescan()
+		m.reload()
+		m.status = "rescanned"
+		return m, nil
+	case "a":
+		return m, func() tea.Msg {
+			err := m.mgr.KillAll()
+			if err != nil {
+				return doneMsg{err: err}
+			}
+			return doneMsg{status: "killed all"}
+		}
+	case "h":
+		m.favMoveLeft(items)
+	case "l":
+		m.favMoveRight(items)
+	case "k", "up":
+		m.favMoveUp(items)
+	case "j", "down":
+		m.favMoveDown(items)
+	case "enter", "g":
+		if len(items) == 0 {
+			return m, nil
+		}
+		m.jumpPath = items[m.favCursor].Path
+		m.quitting = true
+		return m, tea.Quit
+	case " ":
+		if len(items) == 0 {
+			return m, nil
+		}
+		it := items[m.favCursor]
+		if it.Running {
+			return m, func() tea.Msg {
+				err := m.mgr.Kill(it.Name)
+				if err != nil {
+					return doneMsg{err: err}
+				}
+				return doneMsg{status: fmt.Sprintf("killed %s", it.Name)}
+			}
+		}
+		name := it.Name
+		return m, func() tea.Msg {
+			err := m.mgr.StartSwitch(name)
+			if err != nil {
+				return doneMsg{err: err, name: name}
+			}
+			return doneMsg{status: fmt.Sprintf("started %s", name), name: name}
+		}
+	case "x":
+		if len(items) == 0 {
+			return m, nil
+		}
+		name := items[m.favCursor].Name
+		return m, func() tea.Msg {
+			err := m.mgr.Kill(name)
+			if err != nil {
+				return doneMsg{err: err}
+			}
+			return doneMsg{status: fmt.Sprintf("killed %s", name)}
+		}
+	case "o":
+		if len(items) == 0 {
+			return m, nil
+		}
+		it := items[m.favCursor]
+		port := it.PrimaryPort()
+		if port <= 0 {
+			return m, func() tea.Msg {
+				return doneMsg{err: fmt.Errorf("%s has no port (set ports = [ui, ...])", it.Name)}
+			}
+		}
+		url := fmt.Sprintf("http://localhost:%d", port)
+		return m, func() tea.Msg {
+			if err := openURL(url); err != nil {
+				return doneMsg{err: err}
+			}
+			return doneMsg{status: fmt.Sprintf("opened %s", url)}
+		}
+	case "p":
+		if len(items) == 0 {
+			return m, nil
+		}
+		it := items[m.favCursor]
+		return m, func() tea.Msg {
+			pinned, err := state.TogglePin(it.Path)
+			if err != nil {
+				return doneMsg{err: err}
+			}
+			_ = m.mgr.ReloadConfig()
+			if pinned {
+				return doneMsg{status: fmt.Sprintf("pinned %s", it.Name)}
+			}
+			return doneMsg{status: fmt.Sprintf("unpinned %s", it.Name)}
+		}
+	case "e":
+		if len(items) == 0 {
+			return m, nil
+		}
+		it := items[m.favCursor]
+		return m, openProjectEditor(it.Path, it.Name)
+	}
+	return m, nil
+}
+
+func (m *Model) favMoveLeft(items []session.Item) {
+	if len(items) == 0 {
+		return
+	}
+	if m.favCursor > 0 {
+		m.favCursor--
+	}
+}
+
+func (m *Model) favMoveRight(items []session.Item) {
+	if len(items) == 0 {
+		return
+	}
+	if m.favCursor < len(items)-1 {
+		m.favCursor++
+	}
+}
+
+func (m *Model) favMoveUp(items []session.Item) {
+	if len(items) == 0 {
+		return
+	}
+	_, cw := m.contentWidth()
+	cols := m.favGridCols(cw)
+	col := m.favCursor % cols
+	row := m.favCursor / cols
+	if row > 0 {
+		newIdx := (row-1)*cols + col
+		if newIdx < len(items) {
+			m.favCursor = newIdx
+		}
+	}
+}
+
+func (m *Model) favMoveDown(items []session.Item) {
+	if len(items) == 0 {
+		return
+	}
+	_, cw := m.contentWidth()
+	cols := m.favGridCols(cw)
+	col := m.favCursor % cols
+	row := m.favCursor / cols
+	newIdx := (row+1)*cols + col
+	if newIdx < len(items) {
+		m.favCursor = newIdx
+	}
+}
+
 func (m Model) confirmOverlay() string {
 	var b strings.Builder
 	b.WriteString(confirmStyle.Render("Start anyway?"))
@@ -753,6 +984,101 @@ func (m Model) renderItem(i int, it session.Item) string {
 	return fmt.Sprintf("%s%s %s%s", cursor, mark, name, extra)
 }
 
+func renderTile(it session.Item, selected bool) string {
+	icon := it.Icon
+	if icon == "" {
+		icon = "📁"
+	}
+
+	borderFg := lipgloss.Color("8")
+	iconFg := lipgloss.Color("15")
+	nameFg := lipgloss.Color("15")
+	var bg lipgloss.Color
+
+	if selected {
+		borderFg = lipgloss.Color("12")
+		iconFg = lipgloss.Color("15")
+		nameFg = lipgloss.Color("15")
+		bg = lipgloss.Color("4")
+	}
+
+	name := it.Name
+	innerW := tileWidth - 2
+	iconW := lipgloss.Width(icon)
+	nameMax := innerW - iconW - 1
+	if nameMax < 2 {
+		nameMax = 2
+	}
+	if len(name) > nameMax {
+		name = name[:nameMax-1] + "…"
+	}
+
+	content := lipgloss.NewStyle().Foreground(iconFg).Render(icon) + " " +
+		lipgloss.NewStyle().Foreground(nameFg).Render(name)
+
+	content = padCell(content, innerW)
+
+	style := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(borderFg).
+		Width(tileWidth)
+
+	if bg != "" {
+		content = lipgloss.NewStyle().Background(bg).Render(content)
+		style = style.Background(bg)
+	}
+
+	return style.Render(content)
+}
+
+func (m *Model) renderFavorites(innerW int, listRows int) []string {
+	items := m.pinnedItems()
+	if len(items) == 0 {
+		lines := []string{
+			dimStyle.Render("(no pinned projects)"),
+			dimStyle.Render("(p to pin in normal view)"),
+		}
+		for len(lines) < listRows {
+			lines = append(lines, "")
+		}
+		return lines
+	}
+
+	cols := m.favGridCols(innerW)
+	rows := (len(items) + cols - 1) / cols
+
+	if m.favCursor >= len(items) {
+		m.favCursor = len(items) - 1
+	}
+	if m.favCursor < 0 {
+		m.favCursor = 0
+	}
+
+	var gridRows []string
+	for row := 0; row < rows; row++ {
+		tiles := make([]string, 0, cols)
+		for col := 0; col < cols; col++ {
+			idx := row*cols + col
+			if idx >= len(items) {
+				empty := lipgloss.NewStyle().
+					Border(lipgloss.RoundedBorder()).
+					BorderForeground(lipgloss.Color("8")).
+					Width(tileWidth).
+					Render("")
+				tiles = append(tiles, empty)
+				continue
+			}
+			tiles = append(tiles, renderTile(items[idx], idx == m.favCursor))
+		}
+		gridRows = append(gridRows, lipgloss.JoinHorizontal(lipgloss.Top, tiles...))
+	}
+
+	for len(gridRows) < listRows {
+		gridRows = append(gridRows, "")
+	}
+	return gridRows
+}
+
 func (m Model) View() string {
 	if m.quitting {
 		return ""
@@ -765,7 +1091,9 @@ func (m Model) View() string {
 
 	// build list body lines
 	bodyLines := make([]string, 0, listRows)
-	if m.showLog {
+	if m.showFavorites {
+		bodyLines = m.renderFavorites(contentW, listRows)
+	} else if m.showLog {
 		bodyLines = append(bodyLines,
 			dimStyle.Render("── "+m.logName+" log ──"),
 			"",
@@ -816,7 +1144,16 @@ func (m Model) View() string {
 	b.WriteString(dimStyle.Render(strings.Repeat("─", contentW)))
 	b.WriteString("\n")
 
-	if m.searching {
+	if m.showFavorites {
+		if m.errMsg != "" {
+			b.WriteString(errStyle.Render("error: " + m.errMsg))
+		} else if m.status != "" {
+			b.WriteString(statusStyle.Render(m.status))
+		} else {
+			b.WriteString(pinnedStyle.Render(fmt.Sprintf("★ %d favorites", len(m.pinnedItems()))))
+			b.WriteString(dimStyle.Render("  hjkl move  f back"))
+		}
+	} else if m.searching {
 		b.WriteString(searchStyle.Render("/" + m.query + "█"))
 		b.WriteString(dimStyle.Render(fmt.Sprintf("  %d/%d", len(items), len(m.allItems))))
 	} else if m.query != "" {
@@ -855,6 +1192,7 @@ func helpText() string {
 		dimStyle.Render("e") + " edit   " + dimStyle.Render("enter/g") + " jump   " + dimStyle.Render("space") + " start/kill",
 		dimStyle.Render("o") + " open   " + dimStyle.Render("x") + " kill   " + dimStyle.Render("p") + " pin/unpin",
 		dimStyle.Render("a") + " kill-all   " + dimStyle.Render("r") + " rescan   " + dimStyle.Render("q") + " quit",
+		dimStyle.Render("f") + " favorites  " + dimStyle.Render("hjkl") + " nav in fav",
 	}, "\n")
 }
 
