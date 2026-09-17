@@ -1,5 +1,7 @@
 # devctl
 
+<img width="1696" height="973" alt="image" src="https://github.com/user-attachments/assets/24cb71bd-bb79-4649-ade6-deb0df62b4a2" />
+
 複数リポジトリを移動しサーバーを起動 停止する TUI。
 
 リポジトリで設定したコマンドを簡単に実行
